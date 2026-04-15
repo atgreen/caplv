@@ -58,9 +58,6 @@ type LibvirtHostReconciler struct {
 	Scheme               *runtime.Scheme
 	SSHClientFactory     SSHClientFactory
 	LibvirtClientFactory LibvirtClientFactory
-	// HealthCheckInterval is how often to recheck hosts with active machines.
-	// Default: 5 minutes.
-	HealthCheckInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts,verbs=get;list;watch;create;update;patch;delete
@@ -106,11 +103,11 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		log.Error(err, "Failed to check for referencing machines")
 		// On error, requeue to retry the check.
-		return ctrl.Result{RequeueAfter: r.healthCheckInterval()}, nil
+		return ctrl.Result{RequeueAfter: healthCheckIntervalForHost(host)}, nil
 	}
 
 	if hasActiveMachines {
-		interval := r.healthCheckInterval()
+		interval := healthCheckIntervalForHost(host)
 		log.V(1).Info("Host has active machines, scheduling next health check", "interval", interval)
 		return ctrl.Result{RequeueAfter: interval}, nil
 	}
@@ -259,9 +256,9 @@ func (r *LibvirtHostReconciler) hasReferencingMachines(ctx context.Context, host
 	return false, nil
 }
 
-func (r *LibvirtHostReconciler) healthCheckInterval() time.Duration {
-	if r.HealthCheckInterval > 0 {
-		return r.HealthCheckInterval
+func healthCheckIntervalForHost(host *infrav1.LibvirtHost) time.Duration {
+	if host.Spec.HealthCheckIntervalSeconds > 0 {
+		return time.Duration(host.Spec.HealthCheckIntervalSeconds) * time.Second
 	}
 	return hostActiveRequeueInterval
 }

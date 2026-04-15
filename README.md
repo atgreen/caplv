@@ -186,7 +186,7 @@ and destroyed when the VM is deleted. No permanent host storage impact.
 
 | Scenario | What happens | Recovery |
 |----------|-------------|----------|
-| **Host dies or reboots** | VM vanishes. LibvirtHost controller marks host not-ready on the next health check (default: 5 min, configurable via `--host-health-check-interval`). LibvirtMachine finalizer stalls cleanup (`CleanupStalled` condition). | Operator fixes host. Once reachable again, CAPLV retries cleanup automatically. If the VM no longer exists, cleanup completes (not-found errors are ignored). |
+| **Host dies or reboots** | VM vanishes. LibvirtHost controller marks host not-ready on the next health check (per-host `spec.healthCheckIntervalSeconds`, default 5 min). LibvirtMachine finalizer stalls cleanup (`CleanupStalled` condition). | Operator fixes host. Once reachable again, CAPLV retries cleanup automatically. If the VM no longer exists, cleanup completes (not-found errors are ignored). |
 | **Host network becomes unreachable** | Same as host death from CAPLV's perspective. SSH connections fail, host goes not-ready on next health check. | Network restored, host re-verified on next check cycle. |
 | **libvirtd crashes or restarts** | SSH works but virsh commands fail. Host Ping check (`virsh version`) catches this on the next cycle, marks host not-ready. Running VMs may or may not survive depending on libvirt config. | libvirtd restarts, next health check restores host to ready. |
 | **Incumbent workload reclaims resources** | OOM killer terminates the VM process, or host admin runs `virsh destroy`. Domain goes to `shutoff` state. | CAPLV does not currently detect post-ready VM state changes (see Known Limitations). CAPI MachineHealthCheck can detect the node going `NotReady`. |
@@ -226,8 +226,8 @@ and destroyed when the VM is deleted. No permanent host storage impact.
 Host health checks only run while machines actively reference the host.
 When 5-Spot deletes all machines on a host, health checks stop — no SSH
 traffic to idle hosts. When a new machine is created, the host controller
-wakes up and resumes checking. The interval is configurable
-(`--host-health-check-interval`, default 300s / 5 minutes).
+wakes up and resumes checking. The interval is per-host via
+`spec.healthCheckIntervalSeconds` (default 300, minimum 30).
 
 ### Known Limitations
 

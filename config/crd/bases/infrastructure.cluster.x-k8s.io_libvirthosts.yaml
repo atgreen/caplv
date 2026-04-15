@@ -64,6 +64,15 @@ spec:
                 description: firmwarePath overrides the OVMF firmware path on the
                   host.
                 type: string
+              healthCheckIntervalSeconds:
+                default: 300
+                description: |-
+                  healthCheckIntervalSeconds is how often (in seconds) to recheck this
+                  host when it has active machines. Hosts with no machines are not polled.
+                  Default: 300 (5 minutes).
+                format: int32
+                minimum: 30
+                type: integer
               hostKeyFingerprint:
                 description: |-
                   hostKeyFingerprint is the SSH host key fingerprint (SHA256:...) used to

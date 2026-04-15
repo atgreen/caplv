@@ -66,6 +66,14 @@ type LibvirtHostSpec struct {
 	// 4096 MB of memory.
 	// +optional
 	ReservedResources *ReservedResources `json:"reservedResources,omitempty"`
+
+	// healthCheckIntervalSeconds is how often (in seconds) to recheck this
+	// host when it has active machines. Hosts with no machines are not polled.
+	// Default: 300 (5 minutes).
+	// +optional
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=30
+	HealthCheckIntervalSeconds int32 `json:"healthCheckIntervalSeconds,omitempty"`
 }
 
 // ReservedResources defines resources reserved for the host's incumbent workloads.
