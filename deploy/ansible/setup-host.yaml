@@ -20,6 +20,7 @@
   vars:
     caplv_user: caplv
     storage_pool_path: /var/lib/libvirt/images
+    base_image_url: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.18/latest/rhcos-qemu.x86_64.qcow2.gz
     base_image_name: rhcos.qcow2
     ssh_key_path: /tmp/caplv-key
 
@@ -163,14 +164,11 @@
         path: "{{ storage_pool_path }}/{{ base_image_name }}"
       register: base_image_stat
 
-    - name: Download base image
-      ansible.builtin.get_url:
-        url: "{{ base_image_url }}"
-        dest: "{{ storage_pool_path }}/{{ base_image_name }}"
-        mode: "0644"
-      when:
-        - base_image_url is defined
-        - not base_image_stat.stat.exists
+    - name: Download and decompress base image
+      ansible.builtin.shell: |
+        curl -fL "{{ base_image_url }}" | gunzip > "{{ storage_pool_path }}/{{ base_image_name }}"
+        chmod 644 "{{ storage_pool_path }}/{{ base_image_name }}"
+      when: not base_image_stat.stat.exists
 
     - name: Refresh storage pool
       ansible.builtin.command: "virsh pool-refresh {{ libvirt_pool_name }}"
