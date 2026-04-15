@@ -44,6 +44,7 @@ func (b *DiskfsBuilder) BuildIgnitionISO(ignitionData []byte) ([]byte, error) {
 	}
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
+	os.Remove(tmpPath) // Remove so diskfs.Create can use O_EXCL
 	defer os.Remove(tmpPath)
 
 	// Calculate disk size: data + overhead, rounded up to block boundary, minimum 2MB.
@@ -53,7 +54,7 @@ func (b *DiskfsBuilder) BuildIgnitionISO(ignitionData []byte) ([]byte, error) {
 	}
 	diskSize = roundUpToBlock(diskSize, isoBlockSize)
 
-	d, err := diskfs.Create(tmpPath, diskSize, diskfs.SectorSizeDefault)
+	d, err := diskfs.Create(tmpPath, diskSize, diskfs.SectorSize(isoBlockSize))
 	if err != nil {
 		return nil, fmt.Errorf("creating disk image: %w", err)
 	}

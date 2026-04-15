@@ -90,9 +90,15 @@ func (v *LibvirtMachineCustomValidator) ValidateUpdate(_ context.Context, oldObj
 
 	var allErrs field.ErrorList
 
-	// Check providerID transitions: nil->value is allowed, once set cannot change.
-	if oldObj.Spec.ProviderID != nil && newObj.Spec.ProviderID != nil {
-		if *oldObj.Spec.ProviderID != *newObj.Spec.ProviderID {
+	// ProviderID transitions: only nil->value is allowed. Once set, it cannot
+	// be changed or cleared.
+	if oldObj.Spec.ProviderID != nil {
+		if newObj.Spec.ProviderID == nil {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "providerID"),
+				"providerID cannot be cleared once set",
+			))
+		} else if *oldObj.Spec.ProviderID != *newObj.Spec.ProviderID {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec", "providerID"),
 				"providerID cannot be changed once set",

@@ -56,7 +56,7 @@ type LibvirtMachineReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
 	SSHClientFactory     SSHClientFactory
-	LibvirtClientFactory func(sshClient *gossh.Client) libvirt.Client
+	LibvirtClientFactory LibvirtClientFactory
 	ISOBuilder           iso.Builder
 }
 
@@ -223,18 +223,30 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		return r.handleLibvirtError(libvirtMachine, err, "checking root disk")
 	}
 	if !rootExists {
-		log.Info("Creating root disk volume", "volume", rootDiskVolume)
-		backingPath, err := libvirtClient.GetVolumePath(ctx, storagePool, libvirtMachine.Spec.RootDisk.BaseImage)
-		if err != nil {
-			if libvirt.IsNotFound(err) {
-				return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
-					fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, storagePool))
-			}
-			return r.handleLibvirtError(libvirtMachine, err, "getting base image path")
-		}
+		log.Info("Creating root disk volume", "volume", rootDiskVolume, "strategy", libvirtMachine.Spec.RootDisk.CloneStrategy)
 		sizeBytes := libvirtMachine.Spec.RootDisk.Size.Value()
-		if err := libvirtClient.CreateVolumeFromBackingStore(ctx, storagePool, rootDiskVolume, backingPath, sizeBytes); err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "creating root disk")
+
+		switch libvirtMachine.Spec.RootDisk.CloneStrategy {
+		case infrav1.CloneStrategyFullClone:
+			if err := libvirtClient.CloneVolume(ctx, storagePool, libvirtMachine.Spec.RootDisk.BaseImage, rootDiskVolume); err != nil {
+				if libvirt.IsNotFound(err) {
+					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, storagePool))
+				}
+				return r.handleLibvirtError(libvirtMachine, err, "cloning root disk (full-clone)")
+			}
+		default: // copy-on-write
+			backingPath, err := libvirtClient.GetVolumePath(ctx, storagePool, libvirtMachine.Spec.RootDisk.BaseImage)
+			if err != nil {
+				if libvirt.IsNotFound(err) {
+					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, storagePool))
+				}
+				return r.handleLibvirtError(libvirtMachine, err, "getting base image path")
+			}
+			if err := libvirtClient.CreateVolumeFromBackingStore(ctx, storagePool, rootDiskVolume, backingPath, sizeBytes); err != nil {
+				return r.handleLibvirtError(libvirtMachine, err, "creating root disk (copy-on-write)")
+			}
 		}
 	}
 

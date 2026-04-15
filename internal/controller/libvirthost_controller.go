@@ -32,6 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
+	"github.com/atgreen/caplv/internal/libvirt"
 	"sigs.k8s.io/cluster-api/util/patch"
 )
 
@@ -40,11 +41,15 @@ const hostRequeueInterval = 60 * time.Second
 // SSHClientFactory is a function that creates an SSH client from a LibvirtHost and Secret.
 type SSHClientFactory func(ctx context.Context, host *infrav1.LibvirtHost, secret *corev1.Secret) (*gossh.Client, error)
 
+// LibvirtClientFactory is a function that creates a libvirt Client from an SSH client.
+type LibvirtClientFactory func(sshClient *gossh.Client) libvirt.Client
+
 // LibvirtHostReconciler reconciles a LibvirtHost object.
 type LibvirtHostReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
-	SSHClientFactory SSHClientFactory
+	Scheme               *runtime.Scheme
+	SSHClientFactory     SSHClientFactory
+	LibvirtClientFactory LibvirtClientFactory
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts,verbs=get;list;watch;create;update;patch;delete
@@ -80,14 +85,14 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	now := metav1.Now()
 	host.Status.LastChecked = &now
 
-	// If no secretRef, mark ready (local/unauthenticated mode).
+	// secretRef is required — a host without credentials cannot be verified.
 	if host.Spec.SecretRef == nil {
-		host.Status.Ready = true
+		host.Status.Ready = false
 		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
 			Type:               infrav1.HostReachableCondition,
-			Status:             metav1.ConditionTrue,
-			Reason:             infrav1.ReasonConnectionSucceeded,
-			Message:            "No secret configured; assuming reachable",
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonConnectionFailed,
+			Message:            "spec.secretRef is required for SSH connectivity",
 			ObservedGeneration: host.Generation,
 		})
 		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
@@ -113,7 +118,7 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 	}
 
-	// Create SSH client and ping.
+	// Create SSH client.
 	sshClient, err := r.SSHClientFactory(ctx, host, secret)
 	if err != nil {
 		log.Error(err, "Failed to create SSH client")
@@ -129,13 +134,30 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	defer sshClient.Close()
 
-	// Connection succeeded.
+	// Verify libvirt is usable by running virsh version over SSH.
+	libvirtClient := r.LibvirtClientFactory(sshClient)
+	defer libvirtClient.Close()
+
+	if err := libvirtClient.Ping(ctx); err != nil {
+		log.Error(err, "Libvirt connectivity check failed")
+		host.Status.Ready = false
+		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
+			Type:               infrav1.HostReachableCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonConnectionFailed,
+			Message:            "Libvirt connectivity check failed: " + err.Error(),
+			ObservedGeneration: host.Generation,
+		})
+		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+	}
+
+	// SSH + libvirt both verified.
 	host.Status.Ready = true
 	apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
 		Type:               infrav1.HostReachableCondition,
 		Status:             metav1.ConditionTrue,
 		Reason:             infrav1.ReasonConnectionSucceeded,
-		Message:            "SSH connectivity check succeeded",
+		Message:            "SSH and libvirt connectivity verified",
 		ObservedGeneration: host.Generation,
 	})
 

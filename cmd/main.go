@@ -167,9 +167,10 @@ func main() {
 	}
 
 	if err := (&controller.LibvirtHostReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		SSHClientFactory: sshClientFactory,
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		SSHClientFactory:     sshClientFactory,
+		LibvirtClientFactory: libvirtClientFactory,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtHost")
 		os.Exit(1)
