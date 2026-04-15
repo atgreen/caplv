@@ -98,6 +98,13 @@ type RootDiskSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	BaseImage string `json:"baseImage"`
 
+	// baseImagePool is the storage pool containing the base image.
+	// If unset, defaults to storagePool. This allows the base image to
+	// live on persistent storage while ephemeral VM disks use a different
+	// pool (e.g., tmpfs-backed for ephemeral workers).
+	// +optional
+	BaseImagePool string `json:"baseImagePool,omitempty"`
+
 	// bus is the disk bus type.
 	// +optional
 	// +kubebuilder:default="virtio"

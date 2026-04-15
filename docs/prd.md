@@ -2,8 +2,8 @@
 
 ## Product Requirements Document
 
-**Version:** 0.3.0
-**Date:** 2026-04-14
+**Version:** 0.3.1
+**Date:** 2026-04-15
 **Author:** Anthony Green
 **Status:** Draft
 **License:** Apache-2.0
@@ -57,6 +57,14 @@ provisioned simultaneously. Since each host runs one VM, there are no
 contention issues — each reconcile operates against a different libvirt
 host over its own SSH connection.
 
+**Ephemeral storage model:** VMs managed by CAPLV are ephemeral — created
+in the morning, destroyed in the evening. To avoid unnecessary disk I/O,
+operators can configure a tmpfs-backed libvirt storage pool for VM disks
+and ISOs. The `spec.rootDisk.baseImagePool` field allows the base image
+(read-only, persistent) to live in a separate pool from the ephemeral
+CoW overlay and bootstrap ISO. This keeps base images on persistent
+storage while all per-VM artifacts live entirely in RAM.
+
 ## 3. Target Users
 
 | User | Need |
@@ -69,7 +77,8 @@ host over its own SSH connection.
 
 1. Implement a CAPI-compliant infrastructure provider for libvirt/KVM
 2. Enable 5-Spot to schedule KVM virtual machines via standard CAPI resources
-3. Support OpenShift (ignition) and generic Kubernetes (cloud-init) bootstrap
+3. Support OpenShift bootstrap via the current RHCOS installer flow and
+   generic Kubernetes bootstrap via cloud-init
 4. Provide secure, production-grade connectivity to remote libvirt hosts
 5. Keep the provider minimal and focused — no scheduler, no image registry
 
@@ -417,6 +426,23 @@ can be introduced later with explicit credential lifecycle management.
 **CAPLV does not modify bootstrap data.** It reads the bootstrap payload from
 the CAPI `dataSecretName` Secret and passes it through to the VM unmodified.
 
+### 10.0 OpenShift Bootstrap Positioning
+
+For **modern OpenShift worker nodes**, the preferred bootstrap model is:
+
+- Boot **RHCOS live media** via ISO or PXE
+- Pass the worker Ignition to the installer using `coreos-installer`
+  semantics such as `coreos.inst.ignition_url`
+- Install RHCOS to the target disk, then boot the installed system
+
+This is the current recommended RHCOS/OpenShift pattern. CAPLV's existing
+"attach a small Ignition ISO to a pre-cloned root disk" flow remains a
+workable compatibility path, but it should be treated as an implementation
+shortcut, not the target state-of-the-art design for OpenShift.
+
+For **generic Kubernetes** images that expect cloud-init, an attached NoCloud
+ISO remains a normal and acceptable pattern.
+
 ### 10.1 Why No Mutation
 
 Mutating opaque bootstrap payloads from different bootstrap providers
@@ -433,7 +459,8 @@ network settings for the VM.
 
 For cloud-init, this means including `network-config` in the bootstrap
 provider output. For ignition, this means including NetworkManager keyfiles
-in the ignition config.
+in the ignition config or otherwise ensuring the installed RHCOS system has
+the required network configuration on first boot.
 
 CAPLV's `spec.network.addresses` field serves two purposes:
 1. **Populating `status.addresses`** for CAPI contract compliance
@@ -441,19 +468,40 @@ CAPLV's `spec.network.addresses` field serves two purposes:
    which allows the bootstrap-configured networking to bind to the correct
    interface
 
-### 10.3 Bootstrap ISO Creation
+### 10.3 Bootstrap Artifact Strategy
 
-CAPLV creates a bootstrap ISO from the raw Secret data:
+CAPLV supports two bootstrap delivery patterns:
 
-- **Cloud-init:** NoCloud ISO with `user-data` and `meta-data` files. The
-  `meta-data` contains instance-id and local-hostname derived from the
-  machine name.
-- **Ignition:** ISO with the ignition config at `/ignition/config.ign`.
-  RHCOS/FCOS reads ignition from this path on first boot.
+- **Cloud-init:** Create a NoCloud ISO with `user-data` and `meta-data`
+  files. The `meta-data` contains instance-id and local-hostname derived
+  from the machine name.
+- **Ignition compatibility path:** Create a small ISO containing the
+  Ignition config at `/ignition/config.ign`. This works for FCOS/RHCOS-style
+  environments that consume Ignition from attached media, but it should not
+  be considered the preferred long-term OpenShift path.
 
-ISO creation uses Go's `diskfs` library (pure Go, no CGo) — no external
-tools like `genisoimage` required. This keeps the controller image minimal
-and compatible with distroless/scratch base images.
+### 10.4 Preferred OpenShift Worker Flow
+
+For OpenShift workers, CAPLV should evolve toward:
+
+1. Attaching or booting an **RHCOS live ISO** (or PXE-equivalent)
+2. Supplying installer kernel arguments or equivalent configuration for
+   `coreos-installer`
+3. Pointing the installer at the cluster-generated worker Ignition
+   (`worker.ign` / `worker-user-data-managed`)
+4. Installing RHCOS to the cloned VM disk
+5. Rebooting into the installed system
+
+This better matches current OpenShift operational guidance than directly
+booting a preinstalled disk plus an attached Ignition ISO.
+
+### 10.5 Implementation Note
+
+Phase 1 may continue to use pure-Go ISO creation for simplicity. ISO creation
+uses Go's `diskfs` library (pure Go, no CGo) — no external tools like
+`genisoimage` required. However, this should be framed as an initial
+implementation tradeoff rather than the desired steady-state architecture for
+OpenShift worker provisioning.
 
 ## 11. Integration with 5-Spot
 
@@ -610,7 +658,9 @@ Decision deferred to implementation.
   - SSH connectivity to libvirt hosts (per-reconcile, no pooling)
   - VM define/start/destroy/undefine
   - Root disk cloning from base image (copy-on-write)
-  - Bootstrap ISO creation (ignition and cloud-init, pure Go)
+  - Bootstrap artifact creation
+    - Cloud-init NoCloud ISO
+    - Ignition ISO compatibility path for early OpenShift support
   - UEFI firmware with OVMF support
     - Configurable firmware path override on `LibvirtHost`
     - NVRAM template handling for per-VM NVRAM copies
@@ -627,6 +677,17 @@ Decision deferred to implementation.
 - Leader election via controller-runtime (kubebuilder default)
 - CRD generation and deployment manifests
 - Unit and integration tests (envtest)
+
+**Phase 1 note:** OpenShift support may initially use an attached Ignition
+ISO for expedience, but the preferred follow-on design is RHCOS live
+installer boot with `coreos-installer` semantics.
+
+### Phase 1.5: OpenShift Bootstrap Alignment
+
+- Boot OpenShift workers via RHCOS live ISO or PXE semantics
+- Pass worker Ignition using `coreos-installer` / `coreos.inst.ignition_url`
+- Install to the target disk, then reboot into the installed system
+- Keep cloud-init ISO support unchanged for non-OpenShift guests
 
 ### Phase 2: Production Hardening
 

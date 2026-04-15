@@ -206,6 +206,13 @@ spec:
                       clone from.
                     minLength: 1
                     type: string
+                  baseImagePool:
+                    description: |-
+                      baseImagePool is the storage pool containing the base image.
+                      If unset, defaults to storagePool. This allows the base image to
+                      live on persistent storage while ephemeral VM disks use a different
+                      pool (e.g., tmpfs-backed for ephemeral workers).
+                    type: string
                   bus:
                     default: virtio
                     description: bus is the disk bus type.

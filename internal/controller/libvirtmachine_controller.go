@@ -223,6 +223,10 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	bootstrapISO := machineScope.BootstrapISOName()
 	nvramPath := machineScope.NVRAMPath()
 	storagePool := libvirtMachine.Spec.RootDisk.StoragePool
+	baseImagePool := libvirtMachine.Spec.RootDisk.BaseImagePool
+	if baseImagePool == "" {
+		baseImagePool = storagePool
+	}
 
 	// Step 1: Create root disk if it does not exist.
 	rootExists, err := libvirtClient.VolumeExists(ctx, storagePool, rootDiskVolume)
@@ -235,19 +239,19 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 		switch libvirtMachine.Spec.RootDisk.CloneStrategy {
 		case infrav1.CloneStrategyFullClone:
-			if err := libvirtClient.CloneVolume(ctx, storagePool, libvirtMachine.Spec.RootDisk.BaseImage, rootDiskVolume); err != nil {
+			if err := libvirtClient.CloneVolume(ctx, baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage, rootDiskVolume); err != nil {
 				if libvirt.IsNotFound(err) {
 					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
-						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, storagePool))
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, baseImagePool))
 				}
 				return r.handleLibvirtError(libvirtMachine, err, "cloning root disk (full-clone)")
 			}
 		default: // copy-on-write
-			backingPath, err := libvirtClient.GetVolumePath(ctx, storagePool, libvirtMachine.Spec.RootDisk.BaseImage)
+			backingPath, err := libvirtClient.GetVolumePath(ctx, baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage)
 			if err != nil {
 				if libvirt.IsNotFound(err) {
 					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
-						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, storagePool))
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, baseImagePool))
 				}
 				return r.handleLibvirtError(libvirtMachine, err, "getting base image path")
 			}
