@@ -47,16 +47,16 @@ type DiskParam struct {
 // XML struct types matching the libvirt domain XML schema.
 
 type domainXML struct {
-	XMLName  xml.Name        `xml:"domain"`
-	Type     string          `xml:"type,attr"`
-	Name     string          `xml:"name"`
-	UUID     string          `xml:"uuid,omitempty"`
-	Memory   domainMemory    `xml:"memory"`
-	VCPU     domainVCPU      `xml:"vcpu"`
-	OS       domainOS        `xml:"os"`
-	Features domainFeatures  `xml:"features"`
-	CPU      domainCPU       `xml:"cpu"`
-	Devices  domainDevices   `xml:"devices"`
+	XMLName  xml.Name       `xml:"domain"`
+	Type     string         `xml:"type,attr"`
+	Name     string         `xml:"name"`
+	UUID     string         `xml:"uuid,omitempty"`
+	Memory   domainMemory   `xml:"memory"`
+	VCPU     domainVCPU     `xml:"vcpu"`
+	OS       domainOS       `xml:"os"`
+	Features domainFeatures `xml:"features"`
+	CPU      domainCPU      `xml:"cpu"`
+	Devices  domainDevices  `xml:"devices"`
 }
 
 type domainMemory struct {
@@ -111,12 +111,12 @@ type domainDevices struct {
 }
 
 type domainDisk struct {
-	Type     string            `xml:"type,attr"`
-	Device   string            `xml:"device,attr"`
-	Driver   domainDiskDriver  `xml:"driver"`
-	Source   domainDiskSource  `xml:"source"`
-	Target   domainDiskTarget  `xml:"target"`
-	ReadOnly *struct{}         `xml:"readonly,omitempty"`
+	Type     string           `xml:"type,attr"`
+	Device   string           `xml:"device,attr"`
+	Driver   domainDiskDriver `xml:"driver"`
+	Source   domainDiskSource `xml:"source"`
+	Target   domainDiskTarget `xml:"target"`
+	ReadOnly *struct{}        `xml:"readonly,omitempty"`
 }
 
 type domainDiskDriver struct {

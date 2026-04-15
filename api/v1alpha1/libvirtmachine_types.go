@@ -28,7 +28,7 @@ import (
 type BootstrapFormat string
 
 const (
-	BootstrapFormatIgnition BootstrapFormat = "ignition"
+	BootstrapFormatIgnition  BootstrapFormat = "ignition"
 	BootstrapFormatCloudInit BootstrapFormat = "cloud-init"
 )
 

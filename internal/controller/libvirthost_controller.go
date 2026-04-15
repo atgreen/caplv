@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	gossh "golang.org/x/crypto/ssh"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -38,10 +38,10 @@ import (
 )
 
 const (
-	hostRequeueInterval    = 60 * time.Second
-	defaultReservedVCPUs   = 2
+	hostRequeueInterval     = 60 * time.Second
+	defaultReservedVCPUs    = 2
 	defaultReservedMemoryMB = 4096
-	kilobytesPerMegabyte   = 1024
+	kilobytesPerMegabyte    = 1024
 )
 
 // SSHClientFactory is a function that creates an SSH client from a LibvirtHost and Secret.

@@ -21,11 +21,11 @@ const (
 	HostReachableCondition = "Reachable"
 
 	// LibvirtMachine conditions
-	InfrastructureReadyCondition    = "InfrastructureReady"
+	InfrastructureReadyCondition     = "InfrastructureReady"
 	HostReachableForMachineCondition = "HostReachable"
-	ArtifactsCreatedCondition       = "ArtifactsCreated"
-	BootstrapDataReadyCondition     = "BootstrapDataReady"
-	CleanupStalledCondition         = "CleanupStalled"
+	ArtifactsCreatedCondition        = "ArtifactsCreated"
+	BootstrapDataReadyCondition      = "BootstrapDataReady"
+	CleanupStalledCondition          = "CleanupStalled"
 
 	// Reasons — terminal
 	ReasonBaseImageNotFound    = "BaseImageNotFound"

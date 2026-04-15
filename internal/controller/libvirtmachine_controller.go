@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	gossh "golang.org/x/crypto/ssh"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -46,7 +46,7 @@ import (
 )
 
 const (
-	hostNotReadyRequeueInterval     = 30 * time.Second
+	hostNotReadyRequeueInterval      = 30 * time.Second
 	bootstrapNotReadyRequeueInterval = 10 * time.Second
 	cleanupStalledRequeueInterval    = 60 * time.Second
 	memoryMBToKBMultiplier           = 1024
