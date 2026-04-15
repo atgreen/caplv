@@ -6,7 +6,7 @@
 **Date:** 2026-04-15
 **Author:** Anthony Green
 **Status:** Draft
-**License:** Apache-2.0
+**License:** MIT
 
 ---
 
