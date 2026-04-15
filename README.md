@@ -88,7 +88,7 @@ kind: LibvirtHost
 metadata:
   name: rhel-host-01
 spec:
-  uri: "qemu+ssh://root@rhel-host-01.example.com/system"
+  uri: "qemu+ssh://caplv@rhel-host-01.example.com/system"
   secretRef:
     name: rhel-host-01-ssh-key
   hostKeyFingerprint: "SHA256:abc123..."
@@ -102,10 +102,39 @@ The controller discovers total host capacity via `virsh nodeinfo` and
 reports available resources (total minus reserved) in
 `status.capacity.availableVCPUs` / `status.capacity.availableMemoryMB`.
 
-**5. Pre-stage RHCOS base images** on each libvirt host in the persistent
+**5. Create a service account on each host** with minimal privileges:
+
+```bash
+# Create the caplv user with libvirt group membership (no login shell).
+useradd -r -s /sbin/nologin -G libvirt caplv
+mkdir -p /home/caplv/.ssh
+# Deploy the SSH public key matching the Kubernetes Secret.
+cat > /home/caplv/.ssh/authorized_keys <<< "<public-key>"
+chmod 700 /home/caplv/.ssh
+chmod 600 /home/caplv/.ssh/authorized_keys
+chown -R caplv:caplv /home/caplv/.ssh
+```
+
+Grant restricted sudo for tmpfs and file operations only:
+
+```
+# /etc/sudoers.d/caplv
+caplv ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs tmpfs /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/umount /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/rmdir /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/tee /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/rm -f /run/caplv/*
+```
+
+The `libvirt` group grants access to `virsh` commands against
+`qemu:///system` without sudo. Only tmpfs mount/unmount and file writes
+under `/run/caplv/` require elevated privileges.
+
+**6. Pre-stage RHCOS base images** on each libvirt host in the persistent
 storage pool (e.g., `/var/lib/libvirt/images/rhcos-4.14.qcow2`).
 
-**6. Deploy a MachineHealthCheck** (recommended — see below).
+**7. Deploy a MachineHealthCheck** (recommended — see below).
 
 ## Custom Resources
 

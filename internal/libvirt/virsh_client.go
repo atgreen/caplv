@@ -104,6 +104,37 @@ func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, err
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// runSSH executes a shell command on the remote host via SSH.
+func (c *VirshClient) runSSH(ctx context.Context, cmd string) error {
+	c.log.V(2).Info("Executing SSH command", "cmd", cmd)
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	defer session.Close()
+
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(cmd)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGTERM)
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			stderrStr := strings.TrimSpace(stderr.String())
+			c.log.V(1).Info("SSH command failed", "cmd", cmd, "stderr", stderrStr)
+			return fmt.Errorf("%s: %s", cmd, stderrStr)
+		}
+	}
+	return nil
+}
+
 func getResourceArg(args []string) string {
 	if len(args) > 1 {
 		return args[len(args)-1]
@@ -272,21 +303,17 @@ func (c *VirshClient) PoolExists(ctx context.Context, name string) (bool, error)
 }
 
 // CreateTmpfsPool creates a tmpfs-backed storage pool, mounts it, and starts it.
-// The tmpfs mount and pool are created on the remote host via SSH.
+// Uses sudo for mkdir and mount (requires sudoers entry for the service account).
 func (c *VirshClient) CreateTmpfsPool(ctx context.Context, name, path string) error {
-	// Create the directory and mount tmpfs via SSH (not virsh).
-	cmds := fmt.Sprintf("mkdir -p %s && mount -t tmpfs tmpfs %s", path, path)
-	session, err := c.sshClient.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh session for tmpfs mount: %w", err)
+	// Create directory and mount tmpfs (requires sudo).
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", path)); err != nil {
+		return fmt.Errorf("mkdir failed: %w", err)
 	}
-	if err := session.Run(cmds); err != nil {
-		session.Close()
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo mount -t tmpfs tmpfs %s", path)); err != nil {
 		return fmt.Errorf("tmpfs mount failed: %w", err)
 	}
-	session.Close()
 
-	// Define, build (no-op for dir), and start the pool.
+	// Define and start the pool (virsh — no sudo needed with libvirt group).
 	if _, err := c.runVirsh(ctx, "pool-define-as", name, "dir", "--target", path); err != nil {
 		return fmt.Errorf("pool-define-as failed: %w", err)
 	}
@@ -313,13 +340,10 @@ func (c *VirshClient) DestroyPool(ctx context.Context, name string) error {
 	_, _ = c.runVirsh(ctx, "pool-destroy", name)  // ignore errors — may already be stopped
 	_, _ = c.runVirsh(ctx, "pool-undefine", name) // ignore errors — may already be undefined
 
-	// Unmount tmpfs if we have a path.
+	// Unmount tmpfs and remove directory (requires sudo).
 	if poolPath != "" {
-		session, err := c.sshClient.NewSession()
-		if err == nil {
-			_ = session.Run(fmt.Sprintf("umount %s 2>/dev/null; rmdir %s 2>/dev/null", poolPath, poolPath))
-			session.Close()
-		}
+		_ = c.runSSH(ctx, fmt.Sprintf("sudo umount %s 2>/dev/null", poolPath))
+		_ = c.runSSH(ctx, fmt.Sprintf("sudo rmdir %s 2>/dev/null", poolPath))
 	}
 	return nil
 }
@@ -424,22 +448,22 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 }
 
 // WriteRemoteFile writes data to a file on the remote host via SSH.
+// Uses sudo for mkdir (the /run/caplv/ directory requires root to create).
+// The file itself is written via tee to handle permissions.
 func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
-	// Ensure parent directory exists.
+	// Ensure parent directory exists (requires sudo).
 	dir := path[:strings.LastIndex(path, "/")]
-	dirSession, err := c.sshClient.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh session for mkdir: %w", err)
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", dir)); err != nil {
+		return fmt.Errorf("mkdir failed: %w", err)
 	}
-	_ = dirSession.Run(fmt.Sprintf("mkdir -p %s", dir))
-	dirSession.Close()
 
+	// Write file via sudo tee.
 	session, err := c.sshClient.NewSession()
 	if err != nil {
 		return fmt.Errorf("ssh session for write: %w", err)
 	}
 	session.Stdin = bytes.NewReader(data)
-	if err := session.Run(fmt.Sprintf("cat > %s", path)); err != nil {
+	if err := session.Run(fmt.Sprintf("sudo tee %s > /dev/null", path)); err != nil {
 		session.Close()
 		return fmt.Errorf("write remote file %s: %w", path, err)
 	}
@@ -449,13 +473,7 @@ func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []b
 
 // DeleteRemoteFile deletes a file on the remote host via SSH.
 func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
-	session, err := c.sshClient.NewSession()
-	if err != nil {
-		return fmt.Errorf("ssh session for delete: %w", err)
-	}
-	_ = session.Run(fmt.Sprintf("rm -f %s", path))
-	session.Close()
-	return nil
+	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", path))
 }
 
 // Close closes the underlying SSH connection.
