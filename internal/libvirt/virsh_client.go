@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -32,21 +33,35 @@ type VirshClient struct {
 	sshClient *ssh.Client
 	// localMode is true when running against local libvirt (no SSH).
 	localMode bool
+	log       logr.Logger
 }
 
 // NewVirshClient creates a new VirshClient that executes virsh commands over SSH.
 func NewVirshClient(sshClient *ssh.Client) *VirshClient {
-	return &VirshClient{sshClient: sshClient}
+	return &VirshClient{
+		sshClient: sshClient,
+		log:       logr.Discard(),
+	}
 }
 
 // NewLocalVirshClient creates a new VirshClient that executes virsh commands locally.
 func NewLocalVirshClient() *VirshClient {
-	return &VirshClient{localMode: true}
+	return &VirshClient{
+		localMode: true,
+		log:       logr.Discard(),
+	}
+}
+
+// WithLogger sets the logger on the VirshClient and returns the client for chaining.
+func (c *VirshClient) WithLogger(log logr.Logger) *VirshClient {
+	c.log = log
+	return c
 }
 
 func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, error) {
 	cmdArgs := append([]string{"virsh", "-c", "qemu:///system"}, args...)
 	cmd := strings.Join(cmdArgs, " ")
+	c.log.V(2).Info("Executing virsh command", "cmd", cmd)
 
 	if c.localMode {
 		// For local mode, would use exec.CommandContext.
@@ -77,6 +92,7 @@ func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, err
 	case err := <-done:
 		if err != nil {
 			stderrStr := strings.TrimSpace(stderr.String())
+			c.log.V(1).Info("Virsh command failed", "cmd", args[0], "stderr", stderrStr)
 			if stderrStr != "" {
 				return "", ClassifyVirshError(stderrStr, args[0], getResourceArg(args))
 			}
@@ -84,6 +100,7 @@ func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, err
 		}
 	}
 
+	c.log.V(2).Info("Virsh command completed", "cmd", args[0], "stdout_len", len(stdout.String()))
 	return strings.TrimSpace(stdout.String()), nil
 }
 

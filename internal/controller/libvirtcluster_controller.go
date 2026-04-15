@@ -55,7 +55,9 @@ type LibvirtClusterReconciler struct {
 // Reconcile checks that the control plane endpoint is reachable and marks
 // the LibvirtCluster as ready.
 func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("cluster", req.Name, "namespace", req.Namespace)
+	log.Info("Reconciling LibvirtCluster")
+	ctx = logf.IntoContext(ctx, log)
 
 	// Fetch the LibvirtCluster resource.
 	libvirtCluster := &infrav1.LibvirtCluster{}
@@ -111,6 +113,7 @@ func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: clusterRequeueInterval}, nil
 	}
 	conn.Close()
+	log.Info("Control plane endpoint reachable", "address", addr)
 
 	// Control plane is reachable.
 	libvirtCluster.Status.Ready = true

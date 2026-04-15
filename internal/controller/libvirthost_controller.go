@@ -69,7 +69,9 @@ type LibvirtHostReconciler struct {
 // Reconcile performs a connectivity check against the libvirt host and updates status.
 // Health checks only requeue when machines actively reference this host.
 func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("host", req.Name, "namespace", req.Namespace)
+	log.Info("Reconciling LibvirtHost")
+	ctx = logf.IntoContext(ctx, log)
 
 	// Fetch the LibvirtHost resource.
 	host := &infrav1.LibvirtHost{}
@@ -231,6 +233,7 @@ func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *in
 	}
 
 	// SSH + libvirt verified, capacity discovered.
+	log.Info("Host health check passed", "totalVCPUs", nodeInfo.CPUs, "availableVCPUs", availVCPUs, "availableMemoryMB", availMemoryMB)
 	host.Status.Ready = true
 	apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
 		Type:               infrav1.HostReachableCondition,
