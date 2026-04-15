@@ -13,8 +13,8 @@
 ## 1. Problem Statement
 
 Organizations running physical RHEL hosts with KVM/libvirt have machines
-with incumbent workloads — DR standby systems, batch processing servers,
-or desktops — that sit idle for predictable periods. These hosts have
+with incumbent workloads — DR standby systems or servers with predictable
+load schedules — that have idle capacity during off-peak periods. These hosts have
 spare capacity that could temporarily run Kubernetes worker nodes, but
 only if the provisioning is minimally disruptive: the worker VMs must
 be fully ephemeral, come and go on a schedule, and ideally leave no
