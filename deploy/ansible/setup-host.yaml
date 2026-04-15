@@ -1,16 +1,16 @@
 ---
 # CAPLV Host Setup Playbook
 #
-# Prepares a RHEL/Fedora host to be managed by CAPLV. Run with:
+# Fully prepares a RHEL/Fedora host to be managed by CAPLV. Run with:
 #
-#   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml \
-#     --extra-vars "ssh_public_key='ssh-ed25519 AAAA...'"
+#   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml
 #
-# Optional variables:
+# Optional variables (--extra-vars):
 #   base_image_url    - URL to download a qcow2 base image
 #   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
 #   caplv_user        - service account name (default: caplv)
 #   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
+#   ssh_key_path      - where to write the generated key pair (default: /tmp/caplv-key)
 
 - name: Prepare host for CAPLV
   hosts: all
@@ -20,7 +20,7 @@
     caplv_user: caplv
     storage_pool_path: /var/lib/libvirt/images
     base_image_name: rhcos.qcow2
-    # base_image_url: https://...  # set via --extra-vars to download a base image
+    ssh_key_path: /tmp/caplv-key
 
   tasks:
     # ── Packages ──────────────────────────────────────────────
@@ -32,6 +32,7 @@
           - libvirt-daemon-kvm
           - qemu-kvm
           - edk2-ovmf
+          - openssh-server
         state: present
 
     - name: Start and enable libvirtd
@@ -39,6 +40,35 @@
         name: libvirtd
         enabled: true
         state: started
+
+    - name: Start and enable sshd
+      ansible.builtin.systemd:
+        name: sshd
+        enabled: true
+        state: started
+
+    # ── SSH key pair ──────────────────────────────────────────
+
+    - name: Check if SSH key pair already exists
+      ansible.builtin.stat:
+        path: "{{ ssh_key_path }}"
+      register: ssh_key_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Generate SSH key pair
+      ansible.builtin.command:
+        cmd: ssh-keygen -t ed25519 -f {{ ssh_key_path }} -N "" -C "caplv-service-account"
+      delegate_to: localhost
+      become: false
+      when: not ssh_key_stat.stat.exists
+
+    - name: Read public key
+      ansible.builtin.slurp:
+        src: "{{ ssh_key_path }}.pub"
+      register: ssh_pub_key
+      delegate_to: localhost
+      become: false
 
     # ── Service account ───────────────────────────────────────
 
@@ -61,12 +91,11 @@
 
     - name: Deploy SSH authorized key
       ansible.builtin.copy:
-        content: "{{ ssh_public_key }}"
+        content: "{{ ssh_pub_key.content | b64decode }}"
         dest: "/home/{{ caplv_user }}/.ssh/authorized_keys"
         owner: "{{ caplv_user }}"
         group: "{{ caplv_user }}"
         mode: "0600"
-      when: ssh_public_key is defined
 
     # ── Sudoers ───────────────────────────────────────────────
 
@@ -113,17 +142,23 @@
 
     # ── Base image ────────────────────────────────────────────
 
+    - name: Check if base image exists
+      ansible.builtin.stat:
+        path: "{{ storage_pool_path }}/{{ base_image_name }}"
+      register: base_image_stat
+
     - name: Download base image
       ansible.builtin.get_url:
         url: "{{ base_image_url }}"
         dest: "{{ storage_pool_path }}/{{ base_image_name }}"
         mode: "0644"
-      when: base_image_url is defined
+      when:
+        - base_image_url is defined
+        - not base_image_stat.stat.exists
 
     - name: Refresh storage pool
       ansible.builtin.command: virsh pool-refresh default
       changed_when: false
-      when: base_image_url is defined
 
     # ── Verification ──────────────────────────────────────────
 
@@ -131,20 +166,62 @@
       ansible.builtin.command: virsh version
       changed_when: false
 
-    - name: Verify caplv user can access libvirt
+    - name: Test SSH connectivity as caplv user
       ansible.builtin.command: >
-        su -s /bin/bash -c "virsh -c qemu:///system version" {{ caplv_user }}
+        ssh -i {{ ssh_key_path }}
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        {{ caplv_user }}@localhost
+        virsh -c qemu:///system version
+      delegate_to: localhost
+      become: false
       changed_when: false
+      register: ssh_test
 
     - name: Get SSH host key fingerprint
       ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
       register: host_key
       changed_when: false
 
+    - name: Extract fingerprint
+      ansible.builtin.set_fact:
+        ssh_fingerprint: "{{ host_key.stdout.split(' ')[1] }}"
+
+    - name: List base images in pool
+      ansible.builtin.command: virsh vol-list default
+      register: vol_list
+      changed_when: false
+
     - name: Display setup summary
       ansible.builtin.debug:
         msg:
-          - "Host is ready for CAPLV."
-          - "SSH fingerprint: {{ host_key.stdout }}"
-          - "Use this in LibvirtHost.spec.hostKeyFingerprint (the SHA256:... part)."
-          - "URI: qemu+ssh://{{ caplv_user }}@{{ ansible_default_ipv4.address }}/system"
+          - ""
+          - "═══════════════════════════════════════════════════════════"
+          - "  CAPLV host setup complete"
+          - "═══════════════════════════════════════════════════════════"
+          - ""
+          - "  SSH private key:  {{ ssh_key_path }}"
+          - "  SSH fingerprint:  {{ ssh_fingerprint }}"
+          - "  Host IP:          {{ ansible_default_ipv4.address }}"
+          - ""
+          - "  Storage pool volumes:"
+          - "{{ vol_list.stdout }}"
+          - ""
+          - "  ── Create the K8s Secret ──"
+          - ""
+          - "  kubectl create secret generic laptop-ssh-key \\"
+          - "    --from-file=ssh-privatekey={{ ssh_key_path }}"
+          - ""
+          - "  ── Apply this LibvirtHost ──"
+          - ""
+          - "  apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1"
+          - "  kind: LibvirtHost"
+          - "  metadata:"
+          - "    name: laptop"
+          - "  spec:"
+          - "    uri: \"qemu+ssh://{{ caplv_user }}@{{ ansible_default_ipv4.address }}/system\""
+          - "    secretRef:"
+          - "      name: laptop-ssh-key"
+          - "    hostKeyFingerprint: \"{{ ssh_fingerprint }}\""
+          - ""
+          - "═══════════════════════════════════════════════════════════"
