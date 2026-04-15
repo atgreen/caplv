@@ -186,8 +186,8 @@ Node objects in the cluster.
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   5-Spot    │────▶│   CAPI Core      │────▶│     CAPLV       │
-│  Scheduler  │     │  (Machine CR)    │     │  (50 workers)   │
+│   5-Spot    │───▶│   CAPI Core      │───▶│     CAPLV       │
+│  Scheduler  │     │  (Machine CR)    │     │                 │
 └─────────────┘     └──────────────────┘     └────────┬────────┘
                                                       │ SSH x N
                                               ┌───────▼─────────┐
