@@ -283,6 +283,28 @@ Node objects in the cluster.
   on the libvirt host. If the host is unreachable, the resource stays and a
   `CleanupStalled` condition is surfaced for operator intervention.
 
+## Host Security Model
+
+CAPLV connects to each libvirt host over SSH using a dedicated `caplv`
+service account. The account is designed with minimal privileges:
+
+| Operation | Privilege | Mechanism |
+|-----------|-----------|-----------|
+| `virsh define/start/destroy/undefine` | libvirt group | Group membership grants `qemu:///system` access — no sudo |
+| `virsh vol-create-as/vol-upload/vol-delete` | libvirt group | Same — storage pool operations via libvirt API |
+| `virsh nodeinfo/dominfo/version` | libvirt group | Read-only host and domain queries |
+| `mkdir -p /run/caplv/*` | root | `sudo` — create tmpfs mount point |
+| `mount -t tmpfs tmpfs /run/caplv/*` | root | `sudo` — mount ephemeral storage |
+| `umount /run/caplv/*` | root | `sudo` — unmount on cleanup |
+| `rmdir /run/caplv/*` | root | `sudo` — remove mount point |
+| `tee /run/caplv/*` | root | `sudo` — write ignition config |
+| `rm -f /run/caplv/*` | root | `sudo` — delete ignition config |
+| `cat > /tmp/caplv-*` | caplv | No sudo — `/tmp/` is world-writable (temp files for virsh define/vol-upload) |
+
+All sudo rules are restricted to paths under `/run/caplv/`. The service
+account has no login shell (`/sbin/nologin`) and cannot escalate beyond
+these specific commands.
+
 ## Host Storage Layout (with ephemeralPool: true)
 
 ```
