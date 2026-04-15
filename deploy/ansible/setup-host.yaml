@@ -112,30 +112,49 @@
 
     # ── Storage pool ──────────────────────────────────────────
 
-    - name: Ensure default storage pool directory exists
+    - name: Ensure storage pool directory exists
       ansible.builtin.file:
         path: "{{ storage_pool_path }}"
         state: directory
         mode: "0711"
 
-    - name: Check if default storage pool is defined
-      ansible.builtin.command: virsh pool-info default
-      register: pool_check
+    - name: List existing storage pools
+      ansible.builtin.command: virsh pool-list --all --name
+      register: pool_list
       changed_when: false
+
+    - name: Find pool using our storage path
+      ansible.builtin.shell: |
+        for pool in $(virsh pool-list --all --name | grep -v '^$'); do
+          path=$(virsh pool-dumpxml "$pool" 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)')
+          if [ "$path" = "{{ storage_pool_path }}" ]; then
+            echo "$pool"
+            exit 0
+          fi
+        done
+        echo ""
+      register: existing_pool
+      changed_when: false
+
+    - name: Set storage pool name
+      ansible.builtin.set_fact:
+        libvirt_pool_name: "{{ existing_pool.stdout | trim | default('default', true) }}"
+
+    - name: Define storage pool if none uses this path
+      ansible.builtin.command: >
+        virsh pool-define-as {{ libvirt_pool_name }} dir --target {{ storage_pool_path }}
+      when: existing_pool.stdout | trim == ""
+
+    - name: Ensure storage pool is started
+      ansible.builtin.command: virsh pool-start {{ libvirt_pool_name }}
+      register: pool_start
+      changed_when: pool_start.rc == 0
       failed_when: false
 
-    - name: Define default storage pool
-      ansible.builtin.command: >
-        virsh pool-define-as default dir --target {{ storage_pool_path }}
-      when: pool_check.rc != 0
-
-    - name: Start default storage pool
-      ansible.builtin.command: virsh pool-start default
-      when: pool_check.rc != 0
-
-    - name: Autostart default storage pool
-      ansible.builtin.command: virsh pool-autostart default
-      when: pool_check.rc != 0
+    - name: Ensure storage pool autostarts
+      ansible.builtin.command: virsh pool-autostart {{ libvirt_pool_name }}
+      changed_when: false
+      failed_when: false
 
     # ── Base image ────────────────────────────────────────────
 
@@ -154,7 +173,7 @@
         - not base_image_stat.stat.exists
 
     - name: Refresh storage pool
-      ansible.builtin.command: virsh pool-refresh default
+      ansible.builtin.command: "virsh pool-refresh {{ libvirt_pool_name }}"
       changed_when: false
 
     # ── Verification ──────────────────────────────────────────
@@ -184,7 +203,7 @@
         ssh_fingerprint: "{{ host_key.stdout.split(' ')[1] }}"
 
     - name: List base images in pool
-      ansible.builtin.command: virsh vol-list default
+      ansible.builtin.command: "virsh vol-list {{ libvirt_pool_name }}"
       register: vol_list
       changed_when: false
 
