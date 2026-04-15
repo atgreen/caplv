@@ -109,6 +109,14 @@ type RootDiskSpec struct {
 	// +optional
 	BaseImagePool string `json:"baseImagePool,omitempty"`
 
+	// ephemeralPool, when true, causes CAPLV to create the storagePool as
+	// a tmpfs-backed pool at provisioning time and destroy it (including
+	// the tmpfs mount) at deletion time. This ensures the host's persistent
+	// storage is never touched and RAM is only consumed while the VM exists.
+	// Requires storagePool to differ from baseImagePool.
+	// +optional
+	EphemeralPool bool `json:"ephemeralPool,omitempty"`
+
 	// bus is the disk bus type.
 	// +optional
 	// +kubebuilder:default="virtio"
@@ -202,6 +210,11 @@ type ManagedArtifacts struct {
 	// nvramPath is the path to the NVRAM file on the host.
 	// +optional
 	NVRAMPath string `json:"nvramPath,omitempty"`
+
+	// ephemeralPoolName is the name of the tmpfs pool created by CAPLV.
+	// Only set when spec.rootDisk.ephemeralPool is true.
+	// +optional
+	EphemeralPoolName string `json:"ephemeralPoolName,omitempty"`
 
 	// additionalDiskVolumes is a list of additional disk volume names.
 	// +optional

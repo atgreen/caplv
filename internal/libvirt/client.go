@@ -41,6 +41,9 @@ type Client interface {
 	StartDomain(ctx context.Context, name string) error
 	DestroyDomain(ctx context.Context, name string) error
 	UndefineDomain(ctx context.Context, name string) error
+	PoolExists(ctx context.Context, name string) (bool, error)
+	CreateTmpfsPool(ctx context.Context, name, path string) error
+	DestroyPool(ctx context.Context, name string) error
 	VolumeExists(ctx context.Context, pool, name string) (bool, error)
 	CreateVolumeFromBackingStore(ctx context.Context, pool, name, backingPath string, sizeBytes int64) error
 	CloneVolume(ctx context.Context, pool, sourceName, targetName string) error

@@ -113,6 +113,16 @@ func (s *MachineScope) ProviderID() string {
 	return fmt.Sprintf("libvirt:///%s/%s", s.LibvirtHost.Name, s.DomainName())
 }
 
+// EphemeralPoolName returns the name for the per-machine tmpfs storage pool.
+func (s *MachineScope) EphemeralPoolName() string {
+	return s.ArtifactBaseName() + "-pool"
+}
+
+// EphemeralPoolPath returns the mount path for the per-machine tmpfs.
+func (s *MachineScope) EphemeralPoolPath() string {
+	return fmt.Sprintf("/run/caplv/%s", s.ArtifactBaseName())
+}
+
 // GetBootstrapData reads the bootstrap data secret referenced by the CAPI Machine.
 func (s *MachineScope) GetBootstrapData(ctx context.Context) ([]byte, error) {
 	if s.Machine.Spec.Bootstrap.DataSecretName == nil {

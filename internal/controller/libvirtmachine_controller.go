@@ -250,6 +250,24 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		baseImagePool = storagePool
 	}
 
+	// Step 0: Create ephemeral tmpfs pool if requested and not yet present.
+	if libvirtMachine.Spec.RootDisk.EphemeralPool {
+		ephPoolName := machineScope.EphemeralPoolName()
+		ephPoolPath := machineScope.EphemeralPoolPath()
+		poolExists, err := libvirtClient.PoolExists(ctx, ephPoolName)
+		if err != nil {
+			return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool")
+		}
+		if !poolExists {
+			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath)
+			if err := libvirtClient.CreateTmpfsPool(ctx, ephPoolName, ephPoolPath); err != nil {
+				return r.handleLibvirtError(libvirtMachine, err, "creating ephemeral pool")
+			}
+		}
+		// Override storagePool to use the ephemeral pool for all VM artifacts.
+		storagePool = ephPoolName
+	}
+
 	// Step 1: Create root disk if it does not exist.
 	rootExists, err := libvirtClient.VolumeExists(ctx, storagePool, rootDiskVolume)
 	if err != nil {
@@ -406,13 +424,17 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	libvirtMachine.Status.Addresses = machineScope.GetAddresses()
 	providerID := machineScope.ProviderID()
 	libvirtMachine.Spec.ProviderID = &providerID
-	libvirtMachine.Status.ManagedArtifacts = &infrav1.ManagedArtifacts{
+	artifacts := &infrav1.ManagedArtifacts{
 		DomainName:            domainName,
 		RootDiskVolume:        rootDiskVolume,
 		BootstrapISO:          bootstrapISO,
 		NVRAMPath:             nvramPath,
 		AdditionalDiskVolumes: additionalDiskVolumes,
 	}
+	if libvirtMachine.Spec.RootDisk.EphemeralPool {
+		artifacts.EphemeralPoolName = machineScope.EphemeralPoolName()
+	}
+	libvirtMachine.Status.ManagedArtifacts = artifacts
 	libvirtMachine.Status.DomainState = domainInfo.State
 	libvirtMachine.Status.DomainUUID = domainInfo.UUID
 	libvirtMachine.Status.Ready = true
@@ -489,6 +511,10 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 	rootDiskVolume := machineScope.RootDiskVolumeName()
 	bootstrapISO := machineScope.BootstrapISOName()
 	storagePool := libvirtMachine.Spec.RootDisk.StoragePool
+	// If ephemeral pool was used, volumes live in the per-machine pool.
+	if libvirtMachine.Spec.RootDisk.EphemeralPool {
+		storagePool = machineScope.EphemeralPoolName()
+	}
 
 	// Destroy domain (ignore not-found).
 	log.Info("Destroying domain", "domain", domainName)
@@ -520,6 +546,15 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 		log.Info("Deleting additional disk", "volume", volName)
 		if err := libvirtClient.DeleteVolume(ctx, disk.StoragePool, volName); err != nil && !libvirt.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("failed to delete additional disk %s: %w", volName, err)
+		}
+	}
+
+	// Destroy ephemeral tmpfs pool if managed by CAPLV.
+	if libvirtMachine.Spec.RootDisk.EphemeralPool {
+		ephPoolName := machineScope.EphemeralPoolName()
+		log.Info("Destroying ephemeral pool and tmpfs", "pool", ephPoolName)
+		if err := libvirtClient.DestroyPool(ctx, ephPoolName); err != nil && !libvirt.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to destroy ephemeral pool: %w", err)
 		}
 	}
 

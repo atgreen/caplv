@@ -82,9 +82,10 @@ spec:
         memoryMB: 8192
       rootDisk:
         size: "100Gi"
-        storagePool: "ephemeral"
+        storagePool: "vm-disks"
         baseImagePool: "default"
         baseImage: "rhcos-4.14.qcow2"
+        ephemeralPool: true
       network:
         type: "bridge"
         name: "br0"
@@ -100,20 +101,21 @@ spec:
 ### Ephemeral storage with tmpfs
 
 VMs are ephemeral — created and destroyed on demand by 5-Spot schedules.
-To keep all per-VM artifacts in RAM:
+To avoid touching persistent storage on hosts with incumbent workloads,
+set `ephemeralPool: true`:
 
-```bash
-# On each libvirt host (one-time setup):
-mkdir -p /run/caplv-ephemeral
-mount -t tmpfs -o size=120G tmpfs /run/caplv-ephemeral
-virsh pool-define-as ephemeral dir --target /run/caplv-ephemeral
-virsh pool-start ephemeral
-virsh pool-autostart ephemeral
+```yaml
+rootDisk:
+  storagePool: "vm-disks"        # CAPLV creates this as tmpfs on demand
+  baseImagePool: "default"       # persistent pool with pre-staged base image
+  baseImage: "rhcos-4.14.qcow2"
+  ephemeralPool: true
 ```
 
-Then set `storagePool: "ephemeral"` and `baseImagePool: "default"` in the
-LibvirtMachine spec. The persistent base image stays on disk (read-only);
-the CoW overlay, bootstrap ISO, and NVRAM all live in RAM.
+**No host setup required.** CAPLV creates a per-machine tmpfs mount and
+libvirt storage pool when the VM is provisioned, and tears both down when
+the VM is deleted. RAM is only consumed while the VM exists. The host's
+persistent storage is never touched.
 
 ## Key Design Decisions
 
@@ -124,9 +126,9 @@ the CoW overlay, bootstrap ISO, and NVRAM all live in RAM.
   No DHCP. This matches 5-Spot's model of predetermined machine configurations.
 - **Parallel at scale** — 50 concurrent reconcilers by default. Each host runs
   one VM, so there are no contention issues across parallel provisions.
-- **Ephemeral storage** — optional tmpfs-backed storage pools keep all per-VM
-  artifacts in RAM. `baseImagePool` separates the persistent base image from
-  ephemeral CoW overlays.
+- **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
+  mount and libvirt pool on demand, destroys both on cleanup. No host setup
+  required, no persistent storage touched, RAM reclaimed when the VM goes away.
 - **Bootstrap pass-through** — CAPLV does not modify ignition or cloud-init data.
   Network configuration is the bootstrap provider's responsibility. Phase 1 uses
   an attached ignition ISO; the target OpenShift flow is RHCOS live installer
@@ -157,21 +159,22 @@ the CoW overlay, bootstrap ISO, and NVRAM all live in RAM.
                                               └──────────────────┘
 ```
 
-## Host Storage Layout
+## Host Storage Layout (with ephemeralPool: true)
 
 ```
-/var/lib/libvirt/images/            (persistent pool "default")
-  └── rhcos-4.14.qcow2             ← pre-staged by operator (read-only)
+/var/lib/libvirt/images/                    (persistent pool "default")
+  └── rhcos-4.14.qcow2                     ← pre-staged by operator (read-only)
 
-/run/caplv-ephemeral/               (tmpfs pool "ephemeral", optional)
-  ├── ns-cluster-worker01-root.qcow2       ← CoW overlay (CAPLV creates/deletes)
-  └── ns-cluster-worker01-bootstrap.iso    ← ignition ISO (CAPLV creates/deletes)
+/run/caplv/ns-cluster-worker01/             (tmpfs, CAPLV creates/destroys)
+  ├── ns-cluster-worker01-root.qcow2       ← CoW overlay (in RAM)
+  └── ns-cluster-worker01-bootstrap.iso    ← ignition ISO (in RAM)
 
 /var/lib/libvirt/qemu/nvram/
-  └── ns-cluster-worker01_VARS.fd   ← UEFI NVRAM (libvirt manages)
+  └── ns-cluster-worker01_VARS.fd           ← UEFI NVRAM (libvirt manages)
 ```
 
-If not using tmpfs, all artifacts go into the persistent pool.
+The tmpfs mount and libvirt pool are created when the VM is provisioned
+and destroyed when the VM is deleted. No permanent host storage impact.
 
 ## Prerequisites
 

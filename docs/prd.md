@@ -71,12 +71,14 @@ discovered capacity and available resources are reported in
 `LibvirtHost.status.capacity`.
 
 **Ephemeral storage model:** VMs managed by CAPLV are ephemeral —
-created and destroyed on demand by 5-Spot schedules. To avoid unnecessary disk I/O,
-operators can configure a tmpfs-backed libvirt storage pool for VM disks
-and ISOs. The `spec.rootDisk.baseImagePool` field allows the base image
-(read-only, persistent) to live in a separate pool from the ephemeral
-CoW overlay and bootstrap ISO. This keeps base images on persistent
-storage while all per-VM artifacts live entirely in RAM.
+created and destroyed on demand by 5-Spot schedules. To avoid touching
+persistent storage on hosts with incumbent workloads, set
+`spec.rootDisk.ephemeralPool: true`. CAPLV will create a per-machine
+tmpfs-backed libvirt storage pool at provisioning time and destroy it
+(including the tmpfs mount) at deletion time. RAM is only consumed
+while the VM exists — no operator setup required on the host, no
+permanent impact on the incumbent workload. The persistent base image
+lives in a separate pool (`baseImagePool`) and is never modified.
 
 ## 3. Target Users
 

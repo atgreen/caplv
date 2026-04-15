@@ -227,6 +227,14 @@ spec:
                     - copy-on-write
                     - full-clone
                     type: string
+                  ephemeralPool:
+                    description: |-
+                      ephemeralPool, when true, causes CAPLV to create the storagePool as
+                      a tmpfs-backed pool at provisioning time and destroy it (including
+                      the tmpfs mount) at deletion time. This ensures the host's persistent
+                      storage is never touched and RAM is only consumed while the VM exists.
+                      Requires storagePool to differ from baseImagePool.
+                    type: boolean
                   size:
                     anyOf:
                     - type: integer
@@ -364,6 +372,11 @@ spec:
                     type: string
                   domainName:
                     description: domainName is the name of the libvirt domain.
+                    type: string
+                  ephemeralPoolName:
+                    description: |-
+                      ephemeralPoolName is the name of the tmpfs pool created by CAPLV.
+                      Only set when spec.rootDisk.ephemeralPool is true.
                     type: string
                   nvramPath:
                     description: nvramPath is the path to the NVRAM file on the host.

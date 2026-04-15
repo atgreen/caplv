@@ -242,6 +242,80 @@ func (c *VirshClient) UndefineDomain(ctx context.Context, name string) error {
 	return err
 }
 
+// PoolExists returns true if a storage pool with the given name exists.
+func (c *VirshClient) PoolExists(ctx context.Context, name string) (bool, error) {
+	_, err := c.runVirsh(ctx, "pool-info", name)
+	if err != nil {
+		if IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CreateTmpfsPool creates a tmpfs-backed storage pool, mounts it, and starts it.
+// The tmpfs mount and pool are created on the remote host via SSH.
+func (c *VirshClient) CreateTmpfsPool(ctx context.Context, name, path string) error {
+	// Create the directory and mount tmpfs via SSH (not virsh).
+	cmds := fmt.Sprintf("mkdir -p %s && mount -t tmpfs tmpfs %s", path, path)
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session for tmpfs mount: %w", err)
+	}
+	if err := session.Run(cmds); err != nil {
+		session.Close()
+		return fmt.Errorf("tmpfs mount failed: %w", err)
+	}
+	session.Close()
+
+	// Define, build (no-op for dir), and start the pool.
+	if _, err := c.runVirsh(ctx, "pool-define-as", name, "dir", "--target", path); err != nil {
+		return fmt.Errorf("pool-define-as failed: %w", err)
+	}
+	if _, err := c.runVirsh(ctx, "pool-start", name); err != nil {
+		return fmt.Errorf("pool-start failed: %w", err)
+	}
+	return nil
+}
+
+// DestroyPool stops a storage pool, undefines it, and unmounts the backing tmpfs.
+func (c *VirshClient) DestroyPool(ctx context.Context, name string) error {
+	// Get the pool target path before destroying.
+	output, err := c.runVirsh(ctx, "pool-dumpxml", name)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	// Extract <path>...</path> from pool XML.
+	poolPath := extractXMLElement(output, "path")
+
+	// Destroy (stop) and undefine the pool.
+	_, _ = c.runVirsh(ctx, "pool-destroy", name)  // ignore errors — may already be stopped
+	_, _ = c.runVirsh(ctx, "pool-undefine", name) // ignore errors — may already be undefined
+
+	// Unmount tmpfs if we have a path.
+	if poolPath != "" {
+		session, err := c.sshClient.NewSession()
+		if err == nil {
+			_ = session.Run(fmt.Sprintf("umount %s 2>/dev/null; rmdir %s 2>/dev/null", poolPath, poolPath))
+			session.Close()
+		}
+	}
+	return nil
+}
+
+func extractXMLElement(xml, element string) string {
+	start := strings.Index(xml, "<"+element+">")
+	end := strings.Index(xml, "</"+element+">")
+	if start >= 0 && end > start {
+		return xml[start+len(element)+2 : end]
+	}
+	return ""
+}
+
 // VolumeExists returns true if a volume with the given name exists in the pool.
 func (c *VirshClient) VolumeExists(ctx context.Context, pool, name string) (bool, error) {
 	_, err := c.runVirsh(ctx, "vol-info", name, "--pool", pool)
