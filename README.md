@@ -231,10 +231,11 @@ Node objects in the cluster.
   varying specs just work.
 - **Static IPs required** — every VM must declare its network identity upfront.
   No DHCP. This matches 5-Spot's model of predetermined machine configurations.
-- **Control plane health gate** — LibvirtCluster verifies the OpenShift API
-  endpoint is reachable (TCP dial, 60s recheck) before allowing machine
-  provisioning. Prevents spinning up hundreds of workers against a dead
-  control plane.
+- **Control plane health gate** — LibvirtCluster verifies the worker-facing
+  API endpoint is reachable (TCP dial, 60s recheck) before allowing machine
+  provisioning. Since CAPLV runs on the same cluster, this catches the case
+  where the internal API works but the external endpoint (that workers use
+  to join) is down.
 - **Parallel at scale** — 50 concurrent reconcilers by default. Each host runs
   one VM, so there are no contention issues across parallel provisions.
 - **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
@@ -301,9 +302,15 @@ ignition file.
 
 ### Control plane failures
 
+Since CAPLV runs on the same cluster, control plane issues directly
+affect CAPLV's ability to operate.
+
 | Scenario | What happens | Recovery |
 |----------|-------------|----------|
-| **OpenShift API goes down** | LibvirtCluster TCP dial fails, status goes `ready=false` with condition `ControlPlaneUnreachable`. CAPI will not create new machines while the InfrastructureCluster is not ready. Already-running VMs are unaffected. | Automatic. LibvirtCluster rechecks every 60s and restores ready when the API is reachable again. |
+| **OpenShift API fully down** | CAPLV cannot reconcile at all — it runs on this cluster. No new machines are created. Already-running VMs continue to serve workloads but cannot be managed (no drain, no deletion). | API recovers, CAPLV resumes reconciliation automatically. |
+| **API reachable internally but not from worker endpoint** | CAPLV can reconcile, but the LibvirtCluster TCP dial against the external endpoint fails. Status goes `ready=false` with condition `ControlPlaneUnreachable`. CAPI blocks new machine creation. Already-running VMs are unaffected. | External endpoint restored, LibvirtCluster rechecks every 60s. |
+| **Cluster under resource pressure** | CAPLV pods may be evicted or throttled. Reconciliation slows. If 5-Spot activates a large schedule during a stressed period, hundreds of concurrent reconciles add API server and etcd load. | CAPLV pods restart via Deployment. Consider PodDisruptionBudget and resource requests to keep CAPLV running during pressure. |
+| **etcd degradation** | Status patches and Machine updates slow down. All concurrent reconciles compete for etcd bandwidth. | etcd recovers, backlogged reconciles drain. |
 | **Machine approver is down** | VMs boot and request CSRs, but certificates are never approved. Nodes stay `NotReady`. | Operator restores the machine approver. Pending CSRs are approved and nodes join. |
 
 ### Storage failures (with ephemeralPool)
