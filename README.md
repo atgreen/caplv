@@ -14,6 +14,30 @@ disruptive to these hosts: worker-node VMs are fully ephemeral and,
 when backed by a tmpfs storage pool, won't touch persistent storage
 on the device at all.
 
+## Deployment Model
+
+CAPLV runs on the **same OpenShift cluster** that the ephemeral worker
+VMs join. There is no separate management cluster.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  OpenShift Cluster                                   │
+│                                                      │
+│  5-Spot → CAPI → CAPLV ───SSH───→ libvirt hosts     │
+│                                    (RHEL + KVM)      │
+│  Control plane nodes                                 │
+│  + ephemeral CAPLV worker nodes                      │
+└──────────────────────────────────────────────────────┘
+```
+
+This single-cluster model means:
+- **No cross-cluster credentials** — CAPI watches Nodes on the local cluster
+- **Machine-approver works natively** — it sees the CAPI Machine objects
+  and auto-approves CSRs from new worker nodes
+- **Worker ignition is local** — the cluster already has its own worker
+  ignition config for the bootstrap provider to reference
+- **MachineHealthCheck watches local Nodes** — no remote cluster access
+
 ## How It Works
 
 ```
@@ -22,11 +46,12 @@ on the device at all.
     → CAPLV connects to libvirt host over SSH
       → Clones RHCOS base image, creates bootstrap artifact
         → Defines and starts KVM domain
-          → VM boots, joins OpenShift cluster as worker
+          → VM boots, joins this OpenShift cluster as worker
 
 5-Spot: schedule becomes inactive
   → Deletes CAPI Machine
-    → CAPLV destroys domain, cleans up disks and ISOs
+    → CAPI drains pods, deletes the Node object
+      → CAPLV destroys domain, cleans up disks and ISOs
 ```
 
 Each libvirt host runs exactly one CAPLV-managed VM — enforced by an
@@ -36,17 +61,48 @@ controller runs up to 50 concurrent reconcilers by default
 (`--max-concurrent-reconciles`), each operating against a different host
 over its own SSH connection.
 
-## Custom Resources
+## Cluster Setup
 
-| CRD | Purpose |
-|-----|---------|
-| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, OVMF paths, reserved resources). Discovers host capacity via `virsh nodeinfo`. Health-checked only while machines are active. |
-| **LibvirtCluster** | CAPI contract resource — verifies the control plane endpoint is reachable (TCP dial) before reporting ready. No infrastructure provisioned. |
-| **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. VM size can be auto-derived from host capacity. One per host (webhook-enforced). |
+Before creating any ScheduledMachine resources, the OpenShift cluster
+needs these one-time prerequisites:
 
-## Example
+**1. Install CAPI, 5-Spot, and CAPLV** on the OpenShift cluster.
 
-### Register a libvirt host
+**2. Create a CAPI Cluster resource** pointing to itself:
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: my-ocp-cluster
+  namespace: default
+spec:
+  controlPlaneEndpoint:
+    host: "api.my-ocp-cluster.example.com"
+    port: 6443
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtCluster
+    name: my-ocp-cluster
+    namespace: default
+```
+
+**3. Create a LibvirtCluster resource** (CAPLV verifies the endpoint is
+reachable before reporting ready):
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtCluster
+metadata:
+  name: my-ocp-cluster
+  namespace: default
+spec:
+  controlPlaneEndpoint:
+    host: "api.my-ocp-cluster.example.com"
+    port: 6443
+```
+
+**4. Register libvirt hosts** (one resource per physical host):
 
 ```yaml
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -67,6 +123,21 @@ spec:
 The controller discovers total host capacity via `virsh nodeinfo` and
 reports available resources (total minus reserved) in
 `status.capacity.availableVCPUs` / `status.capacity.availableMemoryMB`.
+
+**5. Pre-stage RHCOS base images** on each libvirt host in the persistent
+storage pool (e.g., `/var/lib/libvirt/images/rhcos-4.14.qcow2`).
+
+**6. Deploy a MachineHealthCheck** (recommended — see below).
+
+## Custom Resources
+
+| CRD | Purpose |
+|-----|---------|
+| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, OVMF paths, reserved resources). Discovers host capacity via `virsh nodeinfo`. Health-checked only while machines are active. |
+| **LibvirtCluster** | CAPI contract resource — verifies the control plane endpoint is reachable (TCP dial) before reporting ready. No infrastructure provisioned. |
+| **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. VM size can be auto-derived from host capacity. One per host (webhook-enforced). |
+
+## Example
 
 ### Schedule a worker via 5-Spot
 
@@ -133,9 +204,9 @@ CAPI drains pods and deletes the `Node` object from OpenShift before the
 VM is destroyed. Everything cleans up automatically.
 
 However, if a VM dies unexpectedly (host crash, OOM kill, admin
-`virsh destroy`), the `Node` object lingers in `NotReady` state in
-OpenShift indefinitely. A CAPI `MachineHealthCheck` detects this and
-triggers remediation — deleting the orphaned Machine and its stale Node.
+`virsh destroy`), the `Node` object lingers in `NotReady` state
+indefinitely. A CAPI `MachineHealthCheck` detects this and triggers
+remediation — deleting the orphaned Machine and its stale Node.
 
 ```yaml
 apiVersion: cluster.x-k8s.io/v1beta1
@@ -172,6 +243,10 @@ Node objects in the cluster.
 
 ## Key Design Decisions
 
+- **Single-cluster model** — CAPLV runs on the same OpenShift cluster
+  that worker VMs join. No cross-cluster credentials, no remote kubeconfig
+  management. The machine-approver, MachineHealthCheck, and CAPI all
+  operate against the local API server.
 - **virsh-over-SSH** — pure Go binary (`CGO_ENABLED=0`), distroless container.
   No `libvirt-dev`, no CGo. The `Client` interface allows swapping to native
   libvirt bindings later.
@@ -203,23 +278,6 @@ Node objects in the cluster.
 - **Finalizer safety** — the finalizer is never removed until cleanup is confirmed
   on the libvirt host. If the host is unreachable, the resource stays and a
   `CleanupStalled` condition is surfaced for operator intervention.
-
-## Architecture
-
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   5-Spot    │───▶│   CAPI Core      │───▶│     CAPLV       │
-│  Scheduler  │     │  (Machine CR)    │     │                 │
-└─────────────┘     └──────────────────┘     └────────┬────────┘
-                                                      │ SSH x N
-                                              ┌───────▼──────────┐
-                                              │  libvirt hosts   │
-                                              │  (RHEL + KVM)    │
-                                              │                  │
-                                              │  1 VM per host   │
-                                              │  tmpfs optional  │
-                                              └──────────────────┘
-```
 
 ## Host Storage Layout (with ephemeralPool: true)
 
@@ -255,7 +313,7 @@ and destroyed when the VM is deleted. No permanent host storage impact.
 |----------|-------------|----------|
 | **VM killed externally** (`virsh destroy`) | Domain state changes to `shutoff`. CAPLV does not detect this after initial `ready=true`. | CAPI MachineHealthCheck detects the node disappearing and can trigger remediation. |
 | **VM crashes** | Same as killed — domain state changes but CAPLV's status still shows `ready=true`. | Same as above. |
-| **VM boots but never joins cluster** | Not CAPLV's responsibility. The node will sit in `NotReady` state. | CAPI MachineHealthCheck handles this. The bootstrap provider and machine approver must be functional. |
+| **VM boots but never joins cluster** | Not CAPLV's responsibility. The node will sit in `NotReady` state. | CAPI MachineHealthCheck handles this (`nodeStartupTimeout`). The bootstrap provider and machine approver must be functional. |
 
 ### Controller failures
 
@@ -298,10 +356,10 @@ leave orphaned `Node` objects and `Terminating` pods in OpenShift.
 
 ## Prerequisites
 
-- Go 1.25+
-- Access to a Kubernetes cluster with CAPI installed
-- libvirt hosts reachable over SSH from the management cluster
-- RHCOS (or other) qcow2 base images pre-staged in libvirt storage pools
+- An OpenShift cluster (CAPLV runs on the same cluster that workers join)
+- CAPI installed on the cluster
+- libvirt hosts reachable over SSH from the cluster network
+- RHCOS qcow2 base images pre-staged in libvirt storage pools on each host
 - OVMF firmware packages installed on libvirt hosts (for UEFI boot)
 
 ## Development
@@ -333,9 +391,8 @@ internal/
   iso/                 Ignition and cloud-init ISO creation (pure Go, go-diskfs)
   ssh/                 SSH client with host key verification
   scope/               MachineScope — gathers reconciliation context, artifact naming
-  webhook/             Admission webhook (immutable spec, required static IP)
+  webhook/             Admission webhook (immutable spec, required static IP, one VM per host)
 config/                Kubernetes manifests (CRDs, RBAC, deployment, webhook)
-docs/                  PRD and design documentation
 ```
 
 ## License
