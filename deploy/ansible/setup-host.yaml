@@ -73,7 +73,7 @@
       ansible.builtin.user:
         name: "{{ caplv_user }}"
         system: true
-        shell: /sbin/nologin
+        shell: /bin/bash
         groups: libvirt
         append: true
         create_home: true

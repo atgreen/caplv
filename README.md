@@ -302,8 +302,7 @@ service account. The account is designed with minimal privileges:
 | `cat > /tmp/caplv-*` | caplv | No sudo — `/tmp/` is world-writable (temp files for virsh define/vol-upload) |
 
 All sudo rules are restricted to paths under `/run/caplv/`. The service
-account has no login shell (`/sbin/nologin`) and cannot escalate beyond
-these specific commands.
+account cannot escalate beyond these specific commands.
 
 ## Host Storage Layout (with ephemeralPool: true)
 
