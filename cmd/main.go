@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -68,6 +69,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var maxConcurrentReconciles int
+	var hostHealthCheckSeconds int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -84,6 +86,9 @@ func main() {
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.IntVar(&hostHealthCheckSeconds, "host-health-check-interval", 300,
+		"Interval in seconds between host health checks for hosts with active machines. "+
+			"Hosts with no machines are not polled.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 50,
 		"Maximum number of LibvirtMachine reconciles running in parallel. "+
 			"Each targets a different host over its own SSH connection.")
@@ -175,6 +180,7 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		SSHClientFactory:     sshClientFactory,
 		LibvirtClientFactory: libvirtClientFactory,
+		HealthCheckInterval:  time.Duration(hostHealthCheckSeconds) * time.Second,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtHost")
 		os.Exit(1)

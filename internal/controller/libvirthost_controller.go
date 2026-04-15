@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
@@ -38,10 +39,11 @@ import (
 )
 
 const (
-	hostRequeueInterval     = 60 * time.Second
-	defaultReservedVCPUs    = 2
-	defaultReservedMemoryMB = 4096
-	kilobytesPerMegabyte    = 1024
+	// hostActiveRequeueInterval is used when machines reference this host.
+	hostActiveRequeueInterval = 5 * time.Minute
+	defaultReservedVCPUs      = 2
+	defaultReservedMemoryMB   = 4096
+	kilobytesPerMegabyte      = 1024
 )
 
 // SSHClientFactory is a function that creates an SSH client from a LibvirtHost and Secret.
@@ -56,14 +58,19 @@ type LibvirtHostReconciler struct {
 	Scheme               *runtime.Scheme
 	SSHClientFactory     SSHClientFactory
 	LibvirtClientFactory LibvirtClientFactory
+	// HealthCheckInterval is how often to recheck hosts with active machines.
+	// Default: 5 minutes.
+	HealthCheckInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts/finalizers,verbs=update
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtmachines,verbs=list
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile performs a connectivity check against the libvirt host and updates status.
+// Health checks only requeue when machines actively reference this host.
 func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -91,7 +98,35 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	now := metav1.Now()
 	host.Status.LastChecked = &now
 
-	// secretRef is required — a host without credentials cannot be verified.
+	// Run the health check (SSH + libvirt + capacity discovery).
+	r.performHealthCheck(ctx, host)
+
+	// Only requeue for ongoing monitoring if machines reference this host.
+	hasActiveMachines, err := r.hasReferencingMachines(ctx, host)
+	if err != nil {
+		log.Error(err, "Failed to check for referencing machines")
+		// On error, requeue to retry the check.
+		return ctrl.Result{RequeueAfter: r.healthCheckInterval()}, nil
+	}
+
+	if hasActiveMachines {
+		interval := r.healthCheckInterval()
+		log.V(1).Info("Host has active machines, scheduling next health check", "interval", interval)
+		return ctrl.Result{RequeueAfter: interval}, nil
+	}
+
+	// No active machines — don't requeue. The next reconcile will be
+	// triggered by a spec change or when a LibvirtMachine referencing
+	// this host is created.
+	log.V(1).Info("No active machines reference this host, not requeueing")
+	return ctrl.Result{}, nil
+}
+
+// performHealthCheck verifies SSH + libvirt connectivity and discovers capacity.
+func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *infrav1.LibvirtHost) {
+	log := logf.FromContext(ctx)
+
+	// secretRef is required.
 	if host.Spec.SecretRef == nil {
 		host.Status.Ready = false
 		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
@@ -101,7 +136,7 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Message:            "spec.secretRef is required for SSH connectivity",
 			ObservedGeneration: host.Generation,
 		})
-		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+		return
 	}
 
 	// Fetch the SSH secret.
@@ -121,7 +156,7 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Message:            "Failed to get SSH secret: " + err.Error(),
 			ObservedGeneration: host.Generation,
 		})
-		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+		return
 	}
 
 	// Create SSH client.
@@ -136,13 +171,13 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Message:            "SSH connection failed: " + err.Error(),
 			ObservedGeneration: host.Generation,
 		})
-		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+		return
 	}
 	if sshClient != nil {
 		defer sshClient.Close()
 	}
 
-	// Verify libvirt is usable by running virsh version over SSH.
+	// Verify libvirt is usable.
 	libvirtClient := r.LibvirtClientFactory(sshClient)
 	defer libvirtClient.Close()
 
@@ -156,10 +191,10 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Message:            "Libvirt connectivity check failed: " + err.Error(),
 			ObservedGeneration: host.Generation,
 		})
-		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+		return
 	}
 
-	// Discover host capacity via virsh nodeinfo.
+	// Discover host capacity.
 	nodeInfo, err := libvirtClient.GetNodeInfo(ctx)
 	if err != nil {
 		log.Error(err, "Failed to get node info")
@@ -171,7 +206,7 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Message:            "Failed to get host capacity: " + err.Error(),
 			ObservedGeneration: host.Generation,
 		})
-		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+		return
 	}
 
 	// Compute available resources after reservations.
@@ -198,7 +233,7 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		AvailableMemoryMB: availMemoryMB,
 	}
 
-	// SSH + libvirt both verified, capacity discovered.
+	// SSH + libvirt verified, capacity discovered.
 	host.Status.Ready = true
 	apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
 		Type:               infrav1.HostReachableCondition,
@@ -207,14 +242,50 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Message:            fmt.Sprintf("SSH and libvirt verified; %d vCPUs / %d MB available", availVCPUs, availMemoryMB),
 		ObservedGeneration: host.Generation,
 	})
+}
 
-	return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+// hasReferencingMachines returns true if any LibvirtMachine in the same
+// namespace references this host via spec.hostRef.
+func (r *LibvirtHostReconciler) hasReferencingMachines(ctx context.Context, host *infrav1.LibvirtHost) (bool, error) {
+	machineList := &infrav1.LibvirtMachineList{}
+	if err := r.List(ctx, machineList, client.InNamespace(host.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range machineList.Items {
+		if machineList.Items[i].Spec.HostRef.Name == host.Name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *LibvirtHostReconciler) healthCheckInterval() time.Duration {
+	if r.HealthCheckInterval > 0 {
+		return r.HealthCheckInterval
+	}
+	return hostActiveRequeueInterval
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LibvirtHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.LibvirtHost{}).
+		// Re-reconcile the host when a LibvirtMachine referencing it is created or deleted.
+		// This starts/stops health check monitoring based on active machines.
+		Watches(&infrav1.LibvirtMachine{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, obj client.Object) []ctrl.Request {
+				machine, ok := obj.(*infrav1.LibvirtMachine)
+				if !ok {
+					return nil
+				}
+				return []ctrl.Request{{
+					NamespacedName: types.NamespacedName{
+						Name:      machine.Spec.HostRef.Name,
+						Namespace: machine.Namespace,
+					},
+				}}
+			},
+		)).
 		Named("libvirthost").
 		Complete(r)
 }
