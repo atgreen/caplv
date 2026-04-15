@@ -5,9 +5,6 @@
 #
 #   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml
 #
-# For RHEL 8, add to your inventory or command line:
-#   -e ansible_python_interpreter=/usr/libexec/platform-python
-#
 # Optional variables (--extra-vars):
 #   base_image_url    - URL to download a qcow2 base image
 #   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
@@ -15,23 +12,10 @@
 #   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
 #   ssh_key_path      - where to write the generated key pair (default: /tmp/caplv-key)
 
-- name: Set Python interpreter for RHEL 8
-  hosts: all
-  gather_facts: false
-  tasks:
-    - name: Detect platform-python
-      ansible.builtin.raw: test -x /usr/libexec/platform-python && echo yes || echo no
-      register: has_platform_python
-      changed_when: false
-
-    - name: Use platform-python on RHEL 8
-      ansible.builtin.set_fact:
-        ansible_python_interpreter: /usr/libexec/platform-python
-      when: has_platform_python.stdout | trim == "yes"
-
 - name: Prepare host for CAPLV
   hosts: all
   become: true
+  gather_facts: false
 
   vars:
     caplv_user: caplv
@@ -40,29 +24,25 @@
     ssh_key_path: /tmp/caplv-key
 
   tasks:
-    # ── Packages ──────────────────────────────────────────────
+    # ── Packages (use shell to avoid python module issues) ────
 
     - name: Install libvirt and UEFI firmware
-      ansible.builtin.package:
-        name:
-          - libvirt
-          - libvirt-daemon-kvm
-          - qemu-kvm
-          - edk2-ovmf
-          - openssh-server
-        state: present
+      ansible.builtin.raw: >
+        yum install -y libvirt libvirt-daemon-kvm qemu-kvm edk2-ovmf openssh-server ||
+        dnf install -y libvirt libvirt-daemon-kvm qemu-kvm edk2-ovmf openssh-server
+      changed_when: true
 
     - name: Start and enable libvirtd
-      ansible.builtin.systemd:
-        name: libvirtd
-        enabled: true
-        state: started
+      ansible.builtin.raw: systemctl enable --now libvirtd
+      changed_when: true
 
     - name: Start and enable sshd
-      ansible.builtin.systemd:
-        name: sshd
-        enabled: true
-        state: started
+      ansible.builtin.raw: systemctl enable --now sshd
+      changed_when: true
+
+    # Now that packages are installed, gather facts
+    - name: Gather facts
+      ansible.builtin.setup:
 
     # ── SSH key pair ──────────────────────────────────────────
 
@@ -188,12 +168,11 @@
         ssh -i {{ ssh_key_path }}
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
-        {{ caplv_user }}@localhost
+        {{ caplv_user }}@{{ ansible_default_ipv4.address }}
         virsh -c qemu:///system version
       delegate_to: localhost
       become: false
       changed_when: false
-      register: ssh_test
 
     - name: Get SSH host key fingerprint
       ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
