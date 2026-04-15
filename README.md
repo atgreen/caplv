@@ -180,6 +180,55 @@ persistent storage is never touched.
 The tmpfs mount and libvirt pool are created when the VM is provisioned
 and destroyed when the VM is deleted. No permanent host storage impact.
 
+## Failure Modes
+
+### Host failures
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| **Host dies or reboots** | VM vanishes. LibvirtHost controller marks host not-ready within 60s. LibvirtMachine finalizer stalls cleanup (`CleanupStalled` condition). | Operator fixes host. Once reachable again, CAPLV retries cleanup automatically. If the VM no longer exists, cleanup completes (not-found errors are ignored). |
+| **Host network becomes unreachable** | Same as host death from CAPLV's perspective. SSH connections fail, host goes not-ready. | Network restored, host re-verified on next 60s check. |
+| **libvirtd crashes or restarts** | SSH works but virsh commands fail. Host Ping check (`virsh version`) catches this within 60s, marks host not-ready. Running VMs may or may not survive depending on libvirt config. | libvirtd restarts, next health check restores host to ready. |
+| **Incumbent workload reclaims resources** | OOM killer terminates the VM process, or host admin runs `virsh destroy`. Domain goes to `shutoff` state. | CAPLV does not currently detect post-ready VM state changes (see Known Limitations). CAPI MachineHealthCheck can detect the node going `NotReady`. |
+
+### VM failures
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| **VM killed externally** (`virsh destroy`) | Domain state changes to `shutoff`. CAPLV does not detect this after initial `ready=true`. | CAPI MachineHealthCheck detects the node disappearing and can trigger remediation. |
+| **VM crashes** | Same as killed — domain state changes but CAPLV's status still shows `ready=true`. | Same as above. |
+| **VM boots but never joins cluster** | Not CAPLV's responsibility. The node will sit in `NotReady` state. | CAPI MachineHealthCheck handles this. The bootstrap provider and machine approver must be functional. |
+
+### Controller failures
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| **Controller crashes mid-provisioning** | Partially created artifacts may exist on the host. | Automatic. Deterministic artifact naming allows the controller to discover existing artifacts and resume from where it left off. |
+| **Controller crashes mid-deletion** | Finalizer remains on the resource, blocking garbage collection. | Automatic. On restart, the controller retries cleanup. Idempotent delete operations (not-found errors ignored) ensure safe retry. |
+| **Leader election lost** | New leader picks up all pending reconciles. | Automatic. All operations are idempotent. |
+
+### Control plane failures
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| **OpenShift API goes down** | LibvirtCluster TCP dial fails, status goes `ready=false` with condition `ControlPlaneUnreachable`. CAPI will not create new machines while the InfrastructureCluster is not ready. Already-running VMs are unaffected. | Automatic. LibvirtCluster rechecks every 60s and restores ready when the API is reachable again. |
+| **Machine approver is down** | VMs boot and request CSRs, but certificates are never approved. Nodes stay `NotReady`. | Operator restores the machine approver. Pending CSRs are approved and nodes join. |
+
+### Storage failures (with ephemeralPool)
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| **Host runs out of RAM** | tmpfs can't allocate pages for CoW writes. VM disk I/O fails, VM likely crashes. | Operator intervention. Reduce `reservedResources` or increase host RAM. The crashed VM can be deleted and recreated by 5-Spot. |
+| **Base image pool goes offline** | New VMs can't be provisioned (backing image unreachable). Existing CoW VMs may also fail if the backing chain is broken. | Operator restores the persistent storage pool. |
+
+### Known Limitations
+
+**No post-ready VM health monitoring.** Once a LibvirtMachine reaches
+`ready=true`, CAPLV does not currently recheck the domain state. If the
+VM dies after provisioning, `status.ready` remains `true` until the
+resource is deleted. Use CAPI `MachineHealthCheck` resources to detect
+node-level failures and trigger remediation.
+
 ## Prerequisites
 
 - Go 1.25+
