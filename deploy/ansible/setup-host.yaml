@@ -185,6 +185,7 @@
     - name: Test SSH connectivity as caplv user
       ansible.builtin.command: >
         ssh -i {{ ssh_key_path }}
+        -o IdentitiesOnly=yes
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
         {{ caplv_user }}@{{ ansible_default_ipv4.address }}
