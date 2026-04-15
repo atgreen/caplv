@@ -20,14 +20,14 @@ on the device at all.
 5-Spot: schedule becomes active
   → Creates CAPI Machine + CAPLV LibvirtMachine
     → CAPLV connects to libvirt host over SSH
-      → Clones RHCOS base image, creates bootstrap artifact
+      → Clones RHCOS base image, writes ignition config
         → Defines and starts KVM domain
           → VM boots, joins this OpenShift cluster as worker
 
 5-Spot: schedule becomes inactive
   → Deletes CAPI Machine
     → CAPI drains pods, deletes the Node object
-      → CAPLV destroys domain, cleans up disks and ISOs
+      → CAPLV destroys domain, cleans up all artifacts
 ```
 
 CAPLV runs on the same OpenShift cluster that the worker VMs join.
@@ -261,14 +261,16 @@ Node objects in the cluster.
 
 /run/caplv/ns-cluster-worker01/             (tmpfs, CAPLV creates/destroys)
   ├── ns-cluster-worker01-root.qcow2       ← CoW overlay (in RAM)
-  └── ns-cluster-worker01-bootstrap.iso    ← ignition ISO (in RAM)
+  └── ignition.json                        ← ignition config (delivered via fw_cfg)
 
 /var/lib/libvirt/qemu/nvram/
   └── ns-cluster-worker01_VARS.fd           ← UEFI NVRAM (libvirt manages)
 ```
 
-The tmpfs mount and libvirt pool are created when the VM is provisioned
-and destroyed when the VM is deleted. No permanent host storage impact.
+The tmpfs mount, libvirt pool, and ignition file are created when the VM
+is provisioned and destroyed when the VM is deleted. No permanent host
+storage impact. For cloud-init guests, a NoCloud ISO replaces the
+ignition file.
 
 ## Failure Modes
 
@@ -362,7 +364,7 @@ api/v1alpha1/          CRD type definitions (LibvirtHost, LibvirtCluster, Libvir
 internal/
   controller/          Reconcilers for all three CRDs (50 concurrent machine workers)
   libvirt/             Client interface, virsh-over-SSH, domain XML generation
-  iso/                 Ignition and cloud-init ISO creation (pure Go, go-diskfs)
+  iso/                 Cloud-init NoCloud ISO creation (pure Go, go-diskfs)
   ssh/                 SSH client with host key verification
   scope/               MachineScope — gathers reconciliation context, artifact naming
   webhook/             Admission webhook (immutable spec, required static IP, one VM per host)
