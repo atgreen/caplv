@@ -625,28 +625,26 @@ spec:
 - `sigs.k8s.io/controller-runtime` — Kubernetes controller framework
 - `sigs.k8s.io/cluster-api` — CAPI types, contracts, and test framework
 - `kubebuilder` — project scaffolding and code generation
-- `libvirt.org/go/libvirt` — official libvirt Go bindings (libvirt-go-module)
+- `golang.org/x/crypto/ssh` — SSH client for virsh-over-SSH
 - `k8s.io/client-go` — Kubernetes client
-- `github.com/diskfs/go-diskfs` — pure Go ISO9660 generation (no CGo for ISO creation)
-- `github.com/onsi/ginkgo/v2` + `gomega` — BDD testing (CAPI convention)
+- `github.com/diskfs/go-diskfs` — pure Go ISO9660 generation
 
-### Build Considerations
+### virsh-over-SSH (No CGo)
 
-**CGo dependency:** `libvirt-go-module` requires CGo and links against
-`libvirt-dev` C libraries. This means:
+CAPLV interacts with libvirt by executing `virsh` commands over SSH on
+the target host. This eliminates the CGo dependency (`libvirt-go-module`)
+entirely:
 
-- **Build image** must include `libvirt-dev` headers and `gcc`
-- **Runtime image** must include `libvirt-libs` (shared libraries)
-- **Base image:** Use `registry.access.redhat.com/ubi9-minimal` with
-  `libvirt-libs` installed, not scratch/distroless
-- **Cross-compilation** is not possible with CGo — build natively for target
-  arch or use multi-arch CI runners
-- **CVE patching:** `libvirt-libs` in the runtime image must be kept current
+- **Pure Go binary** — `CGO_ENABLED=0`, static linking
+- **Distroless container** — no `libvirt-dev`, `libvirt-libs`, or `gcc`
+- **Standard cross-compilation** — no multi-arch CI runners needed
+- **No CVE surface** from bundled C libraries
 
-**Alternative under evaluation:** If CGo proves too burdensome, CAPLV could
-shell out to `virsh` over SSH instead of using the Go bindings. This
-eliminates the CGo dependency entirely at the cost of parsing CLI output.
-Decision deferred to implementation.
+The `Client` interface in `internal/libvirt/client.go` abstracts all
+libvirt operations. The `VirshClient` implementation executes commands
+via `golang.org/x/crypto/ssh`. If native libvirt bindings are ever
+needed, a new implementation can be swapped in without changing
+controllers.
 
 ## 15. Development Phases
 
@@ -747,10 +745,9 @@ and network. E2E runs on merge to main, not on every PR.
    **Resolved:** Remote, in the management cluster. This is the standard
    CAPI model. SSH key management is handled via `LibvirtHost` resources
    and Kubernetes Secrets.
-5. **CGo vs virsh-over-SSH?** — The `libvirt-go-module` bindings require CGo
-   and complicate the container build. Shelling out to `virsh` over SSH
-   eliminates CGo but requires parsing CLI output. Evaluate during Phase 1
-   implementation.
+5. ~~**CGo vs virsh-over-SSH?**~~ — **Resolved:** virsh-over-SSH. Pure Go
+   binary, no CGo, distroless container. The `Client` interface allows
+   swapping to native bindings later if needed.
 6. ~~**IPAM for MachineDeployment?**~~ — **Resolved:** CAPLV is exclusively
    for 5-Spot, which uses individual machines with static IPs. No
    MachineDeployment, MachineSet, or MachineTemplate support needed.
@@ -765,4 +762,9 @@ deterministic artifact naming for crash-safe recovery, fully immutable spec,
 coherent error categories (terminal/transient/waiting), finalizer never
 removed without confirmed cleanup, InfrastructureReady semantics documented,
 full-clone contradiction resolved, MachineTemplate scope clarified, and
-OpenShift+UEFI+ignition promoted to Phase 1.*
+OpenShift+UEFI+ignition promoted to Phase 1. Version 0.3.1 addresses:
+virsh-over-SSH confirmed as implementation (CGo question resolved),
+OpenShift bootstrap positioning (RHCOS live installer as target, ignition
+ISO as compatibility path), Phase 1.5 for bootstrap alignment, concurrent
+reconciliation for parallel provisioning at scale, and ephemeral
+tmpfs-backed storage via baseImagePool separation.*
