@@ -190,7 +190,7 @@ Node objects in the cluster.
 │  Scheduler  │     │  (Machine CR)    │     │                 │
 └─────────────┘     └──────────────────┘     └────────┬────────┘
                                                       │ SSH x N
-                                              ┌───────▼─────────┐
+                                              ┌───────▼──────────┐
                                               │  libvirt hosts   │
                                               │  (RHEL + KVM)    │
                                               │                  │
