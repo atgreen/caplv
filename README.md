@@ -7,6 +7,12 @@ hosts. It is built exclusively for
 nodes on and off physical RHEL/KVM infrastructure based on time-of-day
 rules.
 
+The target hosts are machines with incumbent workloads — DR standby
+systems, batch processing servers, or desktops that sit idle outside
+business hours. CAPLV is designed to be minimally disruptive to these
+hosts: worker-node VMs are fully ephemeral and, when backed by a
+tmpfs storage pool, won't touch persistent storage on the device at all.
+
 ## How It Works
 
 ```

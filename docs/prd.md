@@ -12,19 +12,25 @@
 
 ## 1. Problem Statement
 
-Organizations running physical RHEL hosts with KVM/libvirt need a way to
-dynamically provision and deprovision virtual machines as Kubernetes worker
-nodes — managed through the Cluster API (CAPI) contract. Today, no maintained
-CAPI provider exists for libvirt. The archived `cluster-api-provider-libvirt`
-(Go, Kubernetes SIGs) was never production-ready and has been abandoned.
+Organizations running physical RHEL hosts with KVM/libvirt have machines
+with incumbent workloads — DR standby systems, batch processing servers,
+or desktops — that sit idle for predictable periods. These hosts have
+spare capacity that could temporarily run Kubernetes worker nodes, but
+only if the provisioning is minimally disruptive: the worker VMs must
+be fully ephemeral, come and go on a schedule, and ideally leave no
+trace on the host's persistent storage.
 
-Without CAPLV, operators must either:
+Today, no maintained CAPI provider exists for libvirt. The archived
+`cluster-api-provider-libvirt` (Go, Kubernetes SIGs) was never
+production-ready and has been abandoned. Without CAPLV, operators must
+either:
 
 - Use Metal3 (complex Ironic dependency, additional infrastructure overhead)
 - Manually manage VM lifecycle outside of CAPI
 
-All of these add unnecessary complexity or operational burden for environments
-where libvirt is the native hypervisor.
+All of these add unnecessary complexity or operational burden for
+environments where libvirt is the native hypervisor and the goal is
+lightweight, non-disruptive use of idle capacity.
 
 ## 2. Scope and Constraints
 
