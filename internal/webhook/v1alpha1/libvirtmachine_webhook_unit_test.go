@@ -22,10 +22,19 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
 )
+
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = infrav1.AddToScheme(s)
+	return s
+}
 
 func testMachineSpec() infrav1.LibvirtMachineSpec {
 	return infrav1.LibvirtMachineSpec{
@@ -47,6 +56,8 @@ func testMachineSpec() infrav1.LibvirtMachineSpec {
 		BootstrapFormat: infrav1.BootstrapFormatIgnition,
 	}
 }
+
+// --- ValidateCreate: address validation ---
 
 func TestValidateCreate_ValidMachine(t *testing.T) {
 	v := &LibvirtMachineCustomValidator{}
@@ -101,6 +112,124 @@ func TestValidateCreate_MultipleAddresses(t *testing.T) {
 	}
 }
 
+// --- ValidateCreate: full-clone cross-pool rejection ---
+
+func TestValidateCreate_FullCloneSamePool(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{}
+	spec := testMachineSpec()
+	spec.RootDisk.CloneStrategy = infrav1.CloneStrategyFullClone
+	// baseImagePool unset, defaults to storagePool — same pool, allowed.
+	obj := &infrav1.LibvirtMachine{Spec: spec}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err != nil {
+		t.Errorf("expected no error for full-clone same pool, got: %v", err)
+	}
+}
+
+func TestValidateCreate_FullCloneCrossPool_Rejected(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{}
+	spec := testMachineSpec()
+	spec.RootDisk.CloneStrategy = infrav1.CloneStrategyFullClone
+	spec.RootDisk.StoragePool = "ephemeral"
+	spec.RootDisk.BaseImagePool = "default"
+	obj := &infrav1.LibvirtMachine{Spec: spec}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err == nil {
+		t.Error("expected error for full-clone with cross-pool")
+	}
+}
+
+func TestValidateCreate_CopyOnWriteCrossPool_Allowed(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{}
+	spec := testMachineSpec()
+	spec.RootDisk.CloneStrategy = infrav1.CloneStrategyCopyOnWrite
+	spec.RootDisk.StoragePool = "ephemeral"
+	spec.RootDisk.BaseImagePool = "default"
+	obj := &infrav1.LibvirtMachine{Spec: spec}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err != nil {
+		t.Errorf("expected no error for copy-on-write cross-pool, got: %v", err)
+	}
+}
+
+// --- ValidateCreate: host uniqueness ---
+
+func TestValidateCreate_HostAlreadyInUse_Rejected(t *testing.T) {
+	s := testScheme()
+	existing := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-vm", Namespace: "default"},
+		Spec:       testMachineSpec(),
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
+
+	v := &LibvirtMachineCustomValidator{Client: k8sClient}
+	newObj := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "new-vm", Namespace: "default"},
+		Spec:       testMachineSpec(), // same hostRef: host-01
+	}
+	_, err := v.ValidateCreate(context.Background(), newObj)
+	if err == nil {
+		t.Error("expected error: host already in use")
+	}
+}
+
+func TestValidateCreate_DifferentHost_Allowed(t *testing.T) {
+	s := testScheme()
+	existing := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-vm", Namespace: "default"},
+		Spec:       testMachineSpec(), // hostRef: host-01
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
+
+	v := &LibvirtMachineCustomValidator{Client: k8sClient}
+	spec := testMachineSpec()
+	spec.HostRef.Name = "host-02" // different host
+	newObj := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "new-vm", Namespace: "default"},
+		Spec:       spec,
+	}
+	_, err := v.ValidateCreate(context.Background(), newObj)
+	if err != nil {
+		t.Errorf("expected no error for different host, got: %v", err)
+	}
+}
+
+func TestValidateCreate_DeletingMachineDoesNotBlock(t *testing.T) {
+	s := testScheme()
+	now := metav1.Now()
+	existing := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleting-vm",
+			Namespace:         "default",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"test"}, // needed for DeletionTimestamp to be set
+		},
+		Spec: testMachineSpec(), // same host
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
+
+	v := &LibvirtMachineCustomValidator{Client: k8sClient}
+	newObj := &infrav1.LibvirtMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "new-vm", Namespace: "default"},
+		Spec:       testMachineSpec(),
+	}
+	_, err := v.ValidateCreate(context.Background(), newObj)
+	if err != nil {
+		t.Errorf("expected no error: deleting machine should not block, got: %v", err)
+	}
+}
+
+func TestValidateCreate_NoClient_SkipsHostCheck(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{} // nil client
+	obj := &infrav1.LibvirtMachine{Spec: testMachineSpec()}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err != nil {
+		t.Errorf("expected no error with nil client, got: %v", err)
+	}
+}
+
+// --- ValidateUpdate ---
+
 func TestValidateUpdate_RejectSpecChange(t *testing.T) {
 	v := &LibvirtMachineCustomValidator{}
 	oldObj := &infrav1.LibvirtMachine{Spec: testMachineSpec()}
@@ -144,7 +273,7 @@ func TestValidateUpdate_RejectProviderIDClearing(t *testing.T) {
 	oldSpec := testMachineSpec()
 	oldSpec.ProviderID = ptr.To("libvirt:///host/domain")
 	oldObj := &infrav1.LibvirtMachine{Spec: oldSpec}
-	newObj := &infrav1.LibvirtMachine{Spec: testMachineSpec()} // providerID nil
+	newObj := &infrav1.LibvirtMachine{Spec: testMachineSpec()}
 	_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
 	if err == nil {
 		t.Error("expected error for clearing providerID")

@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -39,7 +40,7 @@ var libvirtmachinelog = logf.Log.WithName("libvirtmachine-resource")
 // SetupLibvirtMachineWebhookWithManager registers the webhook for LibvirtMachine in the manager.
 func SetupLibvirtMachineWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &infrastructurev1alpha1.LibvirtMachine{}).
-		WithValidator(&LibvirtMachineCustomValidator{}).
+		WithValidator(&LibvirtMachineCustomValidator{Client: mgr.GetClient()}).
 		Complete()
 }
 
@@ -50,19 +51,21 @@ func SetupLibvirtMachineWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type LibvirtMachineCustomValidator struct{}
+type LibvirtMachineCustomValidator struct {
+	Client client.Reader
+}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type LibvirtMachine.
-func (v *LibvirtMachineCustomValidator) ValidateCreate(_ context.Context, obj *infrastructurev1alpha1.LibvirtMachine) (admission.Warnings, error) {
+func (v *LibvirtMachineCustomValidator) ValidateCreate(ctx context.Context, obj *infrastructurev1alpha1.LibvirtMachine) (admission.Warnings, error) {
 	libvirtmachinelog.Info("Validation for LibvirtMachine upon creation", "name", obj.GetName())
 
 	var allErrs field.ErrorList
-	addressesPath := field.NewPath("spec", "network", "addresses")
 
+	// Validate addresses.
+	addressesPath := field.NewPath("spec", "network", "addresses")
 	if len(obj.Spec.Network.Addresses) == 0 {
 		allErrs = append(allErrs, field.Required(addressesPath, "at least one address is required"))
 	}
-
 	for i, addr := range obj.Spec.Network.Addresses {
 		if _, _, err := net.ParseCIDR(addr); err != nil {
 			allErrs = append(allErrs, field.Invalid(
@@ -70,6 +73,29 @@ func (v *LibvirtMachineCustomValidator) ValidateCreate(_ context.Context, obj *i
 				addr,
 				fmt.Sprintf("invalid CIDR notation: %v", err),
 			))
+		}
+	}
+
+	// Reject full-clone when baseImagePool differs from storagePool.
+	// virsh vol-clone cannot clone across pools.
+	if obj.Spec.RootDisk.CloneStrategy == infrastructurev1alpha1.CloneStrategyFullClone {
+		baseImagePool := obj.Spec.RootDisk.BaseImagePool
+		if baseImagePool == "" {
+			baseImagePool = obj.Spec.RootDisk.StoragePool
+		}
+		if baseImagePool != obj.Spec.RootDisk.StoragePool {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "rootDisk", "cloneStrategy"),
+				string(obj.Spec.RootDisk.CloneStrategy),
+				"full-clone is not supported when baseImagePool differs from storagePool; use copy-on-write instead",
+			))
+		}
+	}
+
+	// Enforce one machine per host.
+	if v.Client != nil {
+		if err := v.validateHostUniqueness(ctx, obj); err != nil {
+			allErrs = append(allErrs, err)
 		}
 	}
 
@@ -133,4 +159,36 @@ func (v *LibvirtMachineCustomValidator) ValidateUpdate(_ context.Context, oldObj
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type LibvirtMachine.
 func (v *LibvirtMachineCustomValidator) ValidateDelete(_ context.Context, _ *infrastructurev1alpha1.LibvirtMachine) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// validateHostUniqueness rejects creation if another LibvirtMachine in the
+// same namespace already references the same host. Each host runs at most
+// one CAPLV-managed VM.
+func (v *LibvirtMachineCustomValidator) validateHostUniqueness(ctx context.Context, obj *infrastructurev1alpha1.LibvirtMachine) *field.Error {
+	machineList := &infrastructurev1alpha1.LibvirtMachineList{}
+	if err := v.Client.List(ctx, machineList, client.InNamespace(obj.Namespace)); err != nil {
+		return field.InternalError(
+			field.NewPath("spec", "hostRef"),
+			fmt.Errorf("failed to list machines: %w", err),
+		)
+	}
+	for i := range machineList.Items {
+		existing := &machineList.Items[i]
+		// Skip self (in case of re-validation).
+		if existing.Name == obj.Name && existing.Namespace == obj.Namespace {
+			continue
+		}
+		// Skip machines that are being deleted.
+		if !existing.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if existing.Spec.HostRef.Name == obj.Spec.HostRef.Name {
+			return field.Forbidden(
+				field.NewPath("spec", "hostRef"),
+				fmt.Sprintf("host %q is already in use by LibvirtMachine %q; each host supports at most one VM",
+					obj.Spec.HostRef.Name, existing.Name),
+			)
+		}
+	}
+	return nil
 }
