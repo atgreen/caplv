@@ -15,6 +15,20 @@
 #   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
 #   ssh_key_path      - where to write the generated key pair (default: /tmp/caplv-key)
 
+- name: Set Python interpreter for RHEL 8
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Detect platform-python
+      ansible.builtin.raw: test -x /usr/libexec/platform-python && echo yes || echo no
+      register: has_platform_python
+      changed_when: false
+
+    - name: Use platform-python on RHEL 8
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: /usr/libexec/platform-python
+      when: has_platform_python.stdout | trim == "yes"
+
 - name: Prepare host for CAPLV
   hosts: all
   become: true
