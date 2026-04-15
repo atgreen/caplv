@@ -1,11 +1,11 @@
 # CAPLV — *EXPERIMENTAL* Cluster API Provider for LibVirt
 
 CAPLV is an *EXPERIMENTAL* [Cluster API](https://cluster-api.sigs.k8s.io/)
-infrastructure provider that provisions KVM virtual machines on
-libvirt hosts. It is built exclusively for
-[5-Spot](https://github.com/RBC/5-spot), which schedules OpenShift
-worker nodes on and off physical RHEL/KVM infrastructure based on
-time-of-day rules.
+infrastructure provider that provisions KVM virtual machines on libvirt
+hosts. It is built exclusively for
+[5-Spot](https://github.com/RBC/5-spot), which schedules OpenShift worker
+nodes on and off physical RHEL/KVM infrastructure based on time-of-day
+rules.
 
 ## How It Works
 
@@ -13,7 +13,7 @@ time-of-day rules.
 5-Spot: "It's 9am Monday — schedule is active"
   → Creates CAPI Machine + CAPLV LibvirtMachine
     → CAPLV connects to libvirt host over SSH
-      → Clones RHCOS base image, creates ignition ISO
+      → Clones RHCOS base image, creates bootstrap artifact
         → Defines and starts KVM domain
           → VM boots, joins OpenShift cluster as worker
 
@@ -22,13 +22,18 @@ time-of-day rules.
     → CAPLV destroys domain, cleans up disks and ISOs
 ```
 
+Each libvirt host runs exactly one CAPLV-managed VM. Hundreds or thousands
+of hosts can come online simultaneously — the controller runs up to 50
+concurrent reconcilers by default (`--max-concurrent-reconciles`), each
+operating against a different host over its own SSH connection.
+
 ## Custom Resources
 
 | CRD | Purpose |
 |-----|---------|
-| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, host key fingerprint, OVMF paths) |
+| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, host key fingerprint, OVMF paths). Periodically verified via SSH + `virsh version`. |
 | **LibvirtCluster** | CAPI contract stub — sets `status.ready: true` immediately. No infrastructure provisioned. |
-| **LibvirtMachine** | Core resource — represents a single KVM VM with static IP, UEFI firmware, and ignition bootstrap |
+| **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. |
 
 ## Example
 
@@ -71,7 +76,8 @@ spec:
         memoryMB: 8192
       rootDisk:
         size: "100Gi"
-        storagePool: "default"
+        storagePool: "ephemeral"
+        baseImagePool: "default"
         baseImage: "rhcos-4.14.qcow2"
       network:
         type: "bridge"
@@ -85,15 +91,40 @@ spec:
       bootstrapFormat: "ignition"
 ```
 
+### Ephemeral storage with tmpfs
+
+VMs are ephemeral — created in the morning, destroyed in the evening.
+To keep all per-VM artifacts in RAM:
+
+```bash
+# On each libvirt host (one-time setup):
+mkdir -p /run/caplv-ephemeral
+mount -t tmpfs -o size=120G tmpfs /run/caplv-ephemeral
+virsh pool-define-as ephemeral dir --target /run/caplv-ephemeral
+virsh pool-start ephemeral
+virsh pool-autostart ephemeral
+```
+
+Then set `storagePool: "ephemeral"` and `baseImagePool: "default"` in the
+LibvirtMachine spec. The persistent base image stays on disk (read-only);
+the CoW overlay, bootstrap ISO, and NVRAM all live in RAM.
+
 ## Key Design Decisions
 
-- **virsh-over-SSH** — no CGo, no `libvirt-dev` dependency. Pure Go binary in a
-  distroless container. The libvirt `Client` interface allows swapping to native
-  bindings later.
+- **virsh-over-SSH** — pure Go binary (`CGO_ENABLED=0`), distroless container.
+  No `libvirt-dev`, no CGo. The `Client` interface allows swapping to native
+  libvirt bindings later.
 - **Static IPs required** — every VM must declare its network identity upfront.
   No DHCP. This matches 5-Spot's model of predetermined machine configurations.
+- **Parallel at scale** — 50 concurrent reconcilers by default. Each host runs
+  one VM, so there are no contention issues across parallel provisions.
+- **Ephemeral storage** — optional tmpfs-backed storage pools keep all per-VM
+  artifacts in RAM. `baseImagePool` separates the persistent base image from
+  ephemeral CoW overlays.
 - **Bootstrap pass-through** — CAPLV does not modify ignition or cloud-init data.
-  Network configuration is the bootstrap provider's responsibility.
+  Network configuration is the bootstrap provider's responsibility. Phase 1 uses
+  an attached ignition ISO; the target OpenShift flow is RHCOS live installer
+  with `coreos-installer` semantics (Phase 1.5).
 - **Deterministic artifact naming** — domain names, disk volumes, and ISOs are
   named `<namespace>-<cluster>-<machine>`. Artifacts can be rediscovered after a
   controller crash without relying on status writes.
@@ -101,26 +132,40 @@ spec:
   configuration, delete and recreate. Enforced by admission webhook.
 - **Finalizer safety** — the finalizer is never removed until cleanup is confirmed
   on the libvirt host. If the host is unreachable, the resource stays and a
-  `CleanupStalled` condition is surfaced.
+  `CleanupStalled` condition is surfaced for operator intervention.
 
 ## Architecture
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │   5-Spot    │────▶│   CAPI Core      │────▶│     CAPLV       │
-│  Scheduler  │     │  (Machine CR)    │     │  Controller     │
+│  Scheduler  │     │  (Machine CR)    │     │  (50 workers)   │
 └─────────────┘     └──────────────────┘     └────────┬────────┘
-                                                      │ SSH
+                                                      │ SSH x N
                                               ┌───────▼─────────┐
-                                              │  libvirt host   │
-                                              │  (RHEL + KVM)   │
-                                              │                 │
-                                              │  ┌───────────┐  │
-                                              │  │  KVM VM   │  │
-                                              │  │  (RHCOS)  │  │
-                                              │  └───────────┘  │
-                                              └─────────────────┘
+                                              │  libvirt hosts   │
+                                              │  (RHEL + KVM)    │
+                                              │                  │
+                                              │  1 VM per host   │
+                                              │  tmpfs optional  │
+                                              └──────────────────┘
 ```
+
+## Host Storage Layout
+
+```
+/var/lib/libvirt/images/            (persistent pool "default")
+  └── rhcos-4.14.qcow2             ← pre-staged by operator (read-only)
+
+/run/caplv-ephemeral/               (tmpfs pool "ephemeral", optional)
+  ├── ns-cluster-worker01-root.qcow2       ← CoW overlay (CAPLV creates/deletes)
+  └── ns-cluster-worker01-bootstrap.iso    ← ignition ISO (CAPLV creates/deletes)
+
+/var/lib/libvirt/qemu/nvram/
+  └── ns-cluster-worker01_VARS.fd   ← UEFI NVRAM (libvirt manages)
+```
+
+If not using tmpfs, all artifacts go into the persistent pool.
 
 ## Prerequisites
 
@@ -142,11 +187,11 @@ make test
 # Generate CRDs and deepcopy
 make manifests generate
 
-# Build container image
-make docker-build IMG=ghcr.io/green/caplv:latest
+# Build container image (pure Go, no CGo)
+make docker-build IMG=ghcr.io/atgreen/caplv:latest
 
 # Deploy to cluster
-make deploy IMG=ghcr.io/green/caplv:latest
+make deploy IMG=ghcr.io/atgreen/caplv:latest
 ```
 
 ## Project Structure
@@ -154,11 +199,11 @@ make deploy IMG=ghcr.io/green/caplv:latest
 ```
 api/v1alpha1/          CRD type definitions (LibvirtHost, LibvirtCluster, LibvirtMachine)
 internal/
-  controller/          Reconcilers for all three CRDs
-  libvirt/             Client interface, virsh-over-SSH implementation, domain XML generation
+  controller/          Reconcilers for all three CRDs (50 concurrent machine workers)
+  libvirt/             Client interface, virsh-over-SSH, domain XML generation
   iso/                 Ignition and cloud-init ISO creation (pure Go, go-diskfs)
-  ssh/                 SSH client helper with host key verification
-  scope/               MachineScope — gathers reconciliation context
+  ssh/                 SSH client with host key verification
+  scope/               MachineScope — gathers reconciliation context, artifact naming
   webhook/             Admission webhook (immutable spec, required static IP)
 config/                Kubernetes manifests (CRDs, RBAC, deployment, webhook)
 docs/                  PRD and design documentation
