@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -33,6 +36,11 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 )
 
+const (
+	clusterRequeueInterval       = 60 * time.Second
+	controlPlaneDialTimeout      = 5 * time.Second
+)
+
 // LibvirtClusterReconciler reconciles a LibvirtCluster object.
 type LibvirtClusterReconciler struct {
 	client.Client
@@ -44,7 +52,8 @@ type LibvirtClusterReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
 
-// Reconcile marks the LibvirtCluster as ready once the owner Cluster is set.
+// Reconcile checks that the control plane endpoint is reachable and marks
+// the LibvirtCluster as ready.
 func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -84,17 +93,36 @@ func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Mark as ready.
+	// Check control plane endpoint reachability via TCP dial.
+	endpoint := libvirtCluster.Spec.ControlPlaneEndpoint
+	addr := fmt.Sprintf("%s:%d", endpoint.Host, endpoint.Port)
+
+	conn, err := net.DialTimeout("tcp", addr, controlPlaneDialTimeout)
+	if err != nil {
+		log.Info("Control plane endpoint not reachable", "address", addr, "error", err)
+		libvirtCluster.Status.Ready = false
+		apimeta.SetStatusCondition(&libvirtCluster.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ControlPlaneUnreachable",
+			Message:            fmt.Sprintf("TCP dial to %s failed: %v", addr, err),
+			ObservedGeneration: libvirtCluster.Generation,
+		})
+		return ctrl.Result{RequeueAfter: clusterRequeueInterval}, nil
+	}
+	conn.Close()
+
+	// Control plane is reachable.
 	libvirtCluster.Status.Ready = true
 	apimeta.SetStatusCondition(&libvirtCluster.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
 		Reason:             infrav1.ReasonClusterReady,
-		Message:            "Cluster infrastructure is ready",
+		Message:            fmt.Sprintf("Control plane endpoint %s is reachable", addr),
 		ObservedGeneration: libvirtCluster.Generation,
 	})
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: clusterRequeueInterval}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
