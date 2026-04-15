@@ -21,6 +21,7 @@ import "context"
 // MockClient implements Client for testing.
 type MockClient struct {
 	PingFn                         func(ctx context.Context) error
+	GetNodeInfoFn                  func(ctx context.Context) (*NodeInfo, error)
 	DomainExistsFn                 func(ctx context.Context, name string) (bool, error)
 	GetDomainFn                    func(ctx context.Context, name string) (*DomainInfo, error)
 	DefineDomainFn                 func(ctx context.Context, xmlDef string) (*DomainInfo, error)
@@ -43,6 +44,14 @@ func (m *MockClient) Ping(ctx context.Context) error {
 		return m.PingFn(ctx)
 	}
 	return nil
+}
+
+// GetNodeInfo delegates to GetNodeInfoFn or returns empty NodeInfo.
+func (m *MockClient) GetNodeInfo(ctx context.Context) (*NodeInfo, error) {
+	if m.GetNodeInfoFn != nil {
+		return m.GetNodeInfoFn(ctx)
+	}
+	return &NodeInfo{}, nil
 }
 
 // DomainExists delegates to DomainExistsFn or returns false, nil.

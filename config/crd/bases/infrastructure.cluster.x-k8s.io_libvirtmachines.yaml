@@ -112,19 +112,21 @@ spec:
                     description: machine is the QEMU machine type.
                     type: string
                   memoryMB:
-                    description: memoryMB is the amount of memory in megabytes to
-                      allocate.
+                    description: |-
+                      memoryMB is the amount of memory in megabytes to allocate.
+                      If zero or omitted, auto-sized from the LibvirtHost's available
+                      capacity (total memory minus reserved).
                     format: int32
-                    minimum: 256
+                    minimum: 0
                     type: integer
                   vcpus:
-                    description: vcpus is the number of virtual CPUs to allocate.
+                    description: |-
+                      vcpus is the number of virtual CPUs to allocate.
+                      If zero or omitted, auto-sized from the LibvirtHost's available
+                      capacity (total vCPUs minus reserved).
                     format: int32
-                    minimum: 1
+                    minimum: 0
                     type: integer
-                required:
-                - memoryMB
-                - vcpus
                 type: object
               hostRef:
                 description: hostRef is a reference to a LibvirtHost resource in the

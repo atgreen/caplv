@@ -59,6 +59,47 @@ type LibvirtHostSpec struct {
 	// +optional
 	// +kubebuilder:default="/usr/share/OVMF/OVMF_VARS.fd"
 	NVRAMTemplatePath string `json:"nvramTemplatePath,omitempty"`
+
+	// reservedResources specifies how much CPU and memory to reserve for the
+	// host's incumbent workloads. CAPLV will not allocate VMs that exceed
+	// the remaining capacity. If unset, defaults to reserving 2 vCPUs and
+	// 4096 MB of memory.
+	// +optional
+	ReservedResources *ReservedResources `json:"reservedResources,omitempty"`
+}
+
+// ReservedResources defines resources reserved for the host's incumbent workloads.
+type ReservedResources struct {
+	// vcpus is the number of vCPUs to reserve for the host. Default: 2.
+	// +optional
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	VCPUs int32 `json:"vcpus,omitempty"`
+
+	// memoryMB is the amount of memory in MB to reserve for the host. Default: 4096.
+	// +optional
+	// +kubebuilder:default=4096
+	// +kubebuilder:validation:Minimum=0
+	MemoryMB int32 `json:"memoryMB,omitempty"`
+}
+
+// HostCapacity reports the discovered and available resources on a libvirt host.
+type HostCapacity struct {
+	// totalVCPUs is the total number of CPU threads on the host.
+	// +optional
+	TotalVCPUs int32 `json:"totalVCPUs,omitempty"`
+
+	// totalMemoryMB is the total physical memory on the host in MB.
+	// +optional
+	TotalMemoryMB int32 `json:"totalMemoryMB,omitempty"`
+
+	// availableVCPUs is the vCPUs available for CAPLV after reservations.
+	// +optional
+	AvailableVCPUs int32 `json:"availableVCPUs,omitempty"`
+
+	// availableMemoryMB is the memory available for CAPLV after reservations in MB.
+	// +optional
+	AvailableMemoryMB int32 `json:"availableMemoryMB,omitempty"`
 }
 
 // LibvirtHostStatus defines the observed state of LibvirtHost.
@@ -66,6 +107,11 @@ type LibvirtHostStatus struct {
 	// ready indicates whether the host is reachable and usable.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
+
+	// capacity reports the discovered host resources and what is available
+	// for CAPLV after reservations.
+	// +optional
+	Capacity *HostCapacity `json:"capacity,omitempty"`
 
 	// lastChecked is the timestamp of the last connectivity check.
 	// +optional
@@ -82,6 +128,8 @@ type LibvirtHostStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="URI",type="string",JSONPath=".spec.uri"
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready"
+// +kubebuilder:printcolumn:name="vCPUs",type="integer",JSONPath=".status.capacity.availableVCPUs",priority=1
+// +kubebuilder:printcolumn:name="MemMB",type="integer",JSONPath=".status.capacity.availableMemoryMB",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // LibvirtHost is the Schema for the libvirthosts API.

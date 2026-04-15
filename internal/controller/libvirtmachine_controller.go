@@ -217,6 +217,28 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		return ctrl.Result{}, fmt.Errorf("failed to create machine scope: %w", err)
 	}
 
+	// Resolve auto-sizing: if vcpus or memoryMB are zero, use host capacity.
+	resolvedVCPUs := libvirtMachine.Spec.Domain.VCPUs
+	resolvedMemoryMB := libvirtMachine.Spec.Domain.MemoryMB
+	if resolvedVCPUs == 0 || resolvedMemoryMB == 0 {
+		if libvirtHost.Status.Capacity == nil {
+			log.Info("Host capacity not yet discovered, requeueing")
+			return ctrl.Result{RequeueAfter: hostNotReadyRequeueInterval}, nil
+		}
+		if resolvedVCPUs == 0 {
+			resolvedVCPUs = libvirtHost.Status.Capacity.AvailableVCPUs
+		}
+		if resolvedMemoryMB == 0 {
+			resolvedMemoryMB = libvirtHost.Status.Capacity.AvailableMemoryMB
+		}
+		if resolvedVCPUs <= 0 || resolvedMemoryMB <= 0 {
+			return r.setTerminalError(libvirtMachine, infrav1.ReasonStorageInsufficient,
+				fmt.Sprintf("host %s has insufficient available resources: %d vCPUs, %d MB",
+					libvirtHost.Name, resolvedVCPUs, resolvedMemoryMB))
+		}
+		log.Info("Auto-sized VM from host capacity", "vcpus", resolvedVCPUs, "memoryMB", resolvedMemoryMB)
+	}
+
 	// Compute artifact names.
 	domainName := machineScope.DomainName()
 	rootDiskVolume := machineScope.RootDiskVolumeName()
@@ -338,8 +360,8 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 		xmlDef, err := libvirt.GenerateDomainXML(libvirt.DomainXMLParams{
 			Name:             domainName,
-			VCPUs:            libvirtMachine.Spec.Domain.VCPUs,
-			MemoryKB:         int64(libvirtMachine.Spec.Domain.MemoryMB) * memoryMBToKBMultiplier,
+			VCPUs:            resolvedVCPUs,
+			MemoryKB:         int64(resolvedMemoryMB) * memoryMBToKBMultiplier,
 			Machine:          libvirtMachine.Spec.Domain.Machine,
 			Firmware:         string(libvirtMachine.Spec.Domain.Firmware),
 			FirmwarePath:     libvirtHost.Spec.FirmwarePath,

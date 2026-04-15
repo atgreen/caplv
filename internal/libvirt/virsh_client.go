@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,45 @@ func getResourceArg(args []string) string {
 func (c *VirshClient) Ping(ctx context.Context) error {
 	_, err := c.runVirsh(ctx, "version")
 	return err
+}
+
+// GetNodeInfo returns host hardware information from virsh nodeinfo.
+func (c *VirshClient) GetNodeInfo(ctx context.Context) (*NodeInfo, error) {
+	output, err := c.runVirsh(ctx, "nodeinfo")
+	if err != nil {
+		return nil, err
+	}
+	info := &NodeInfo{}
+	var cores, threads, sockets int64
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// Strip units (e.g., "65390 KiB" -> "65390")
+		val = strings.Fields(val)[0]
+		switch key {
+		case "CPU socket(s)":
+			sockets, _ = strconv.ParseInt(val, 10, 32)
+		case "Core(s) per socket":
+			cores, _ = strconv.ParseInt(val, 10, 32)
+		case "Thread(s) per core":
+			threads, _ = strconv.ParseInt(val, 10, 32)
+		case "Memory size":
+			info.MemoryKB, _ = strconv.ParseInt(val, 10, 64)
+		case "CPU(s)":
+			// Total CPUs reported directly — use as fallback
+			cpus, _ := strconv.ParseInt(val, 10, 32)
+			info.CPUs = int32(cpus)
+		}
+	}
+	// Prefer computed value if all components are available.
+	if sockets > 0 && cores > 0 && threads > 0 {
+		info.CPUs = int32(sockets * cores * threads)
+	}
+	return info, nil
 }
 
 // DomainExists returns true if a domain with the given name exists.

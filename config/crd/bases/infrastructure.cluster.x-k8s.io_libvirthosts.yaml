@@ -21,6 +21,14 @@ spec:
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.capacity.availableVCPUs
+      name: vCPUs
+      priority: 1
+      type: integer
+    - jsonPath: .status.capacity.availableMemoryMB
+      name: MemMB
+      priority: 1
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -66,6 +74,28 @@ spec:
                 description: nvramTemplatePath overrides the NVRAM template path on
                   the host.
                 type: string
+              reservedResources:
+                description: |-
+                  reservedResources specifies how much CPU and memory to reserve for the
+                  host's incumbent workloads. CAPLV will not allocate VMs that exceed
+                  the remaining capacity. If unset, defaults to reserving 2 vCPUs and
+                  4096 MB of memory.
+                properties:
+                  memoryMB:
+                    default: 4096
+                    description: 'memoryMB is the amount of memory in MB to reserve
+                      for the host. Default: 4096.'
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  vcpus:
+                    default: 2
+                    description: 'vcpus is the number of vCPUs to reserve for the
+                      host. Default: 2.'
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
               secretRef:
                 description: |-
                   secretRef is a reference to a Secret containing the SSH private key
@@ -94,6 +124,32 @@ spec:
           status:
             description: status defines the observed state of LibvirtHost.
             properties:
+              capacity:
+                description: |-
+                  capacity reports the discovered host resources and what is available
+                  for CAPLV after reservations.
+                properties:
+                  availableMemoryMB:
+                    description: availableMemoryMB is the memory available for CAPLV
+                      after reservations in MB.
+                    format: int32
+                    type: integer
+                  availableVCPUs:
+                    description: availableVCPUs is the vCPUs available for CAPLV after
+                      reservations.
+                    format: int32
+                    type: integer
+                  totalMemoryMB:
+                    description: totalMemoryMB is the total physical memory on the
+                      host in MB.
+                    format: int32
+                    type: integer
+                  totalVCPUs:
+                    description: totalVCPUs is the total number of CPU threads on
+                      the host.
+                    format: int32
+                    type: integer
+                type: object
               conditions:
                 description: conditions represent the current state of the LibvirtHost
                   resource.

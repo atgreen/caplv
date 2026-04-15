@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,7 +37,12 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 )
 
-const hostRequeueInterval = 60 * time.Second
+const (
+	hostRequeueInterval    = 60 * time.Second
+	defaultReservedVCPUs   = 2
+	defaultReservedMemoryMB = 4096
+	kilobytesPerMegabyte   = 1024
+)
 
 // SSHClientFactory is a function that creates an SSH client from a LibvirtHost and Secret.
 type SSHClientFactory func(ctx context.Context, host *infrav1.LibvirtHost, secret *corev1.Secret) (*gossh.Client, error)
@@ -153,13 +159,52 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 	}
 
-	// SSH + libvirt both verified.
+	// Discover host capacity via virsh nodeinfo.
+	nodeInfo, err := libvirtClient.GetNodeInfo(ctx)
+	if err != nil {
+		log.Error(err, "Failed to get node info")
+		host.Status.Ready = false
+		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
+			Type:               infrav1.HostReachableCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonConnectionFailed,
+			Message:            "Failed to get host capacity: " + err.Error(),
+			ObservedGeneration: host.Generation,
+		})
+		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
+	}
+
+	// Compute available resources after reservations.
+	reservedVCPUs := int32(defaultReservedVCPUs)
+	reservedMemoryMB := int32(defaultReservedMemoryMB)
+	if host.Spec.ReservedResources != nil {
+		reservedVCPUs = host.Spec.ReservedResources.VCPUs
+		reservedMemoryMB = host.Spec.ReservedResources.MemoryMB
+	}
+	totalMemoryMB := int32(nodeInfo.MemoryKB / kilobytesPerMegabyte)
+	availVCPUs := nodeInfo.CPUs - reservedVCPUs
+	availMemoryMB := totalMemoryMB - reservedMemoryMB
+	if availVCPUs < 0 {
+		availVCPUs = 0
+	}
+	if availMemoryMB < 0 {
+		availMemoryMB = 0
+	}
+
+	host.Status.Capacity = &infrav1.HostCapacity{
+		TotalVCPUs:        nodeInfo.CPUs,
+		TotalMemoryMB:     totalMemoryMB,
+		AvailableVCPUs:    availVCPUs,
+		AvailableMemoryMB: availMemoryMB,
+	}
+
+	// SSH + libvirt both verified, capacity discovered.
 	host.Status.Ready = true
 	apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
 		Type:               infrav1.HostReachableCondition,
 		Status:             metav1.ConditionTrue,
 		Reason:             infrav1.ReasonConnectionSucceeded,
-		Message:            "SSH and libvirt connectivity verified",
+		Message:            fmt.Sprintf("SSH and libvirt verified; %d vCPUs / %d MB available", availVCPUs, availMemoryMB),
 		ObservedGeneration: host.Generation,
 	})
 

@@ -61,7 +61,16 @@ provisioned simultaneously. Since each host runs one VM, there are no
 contention issues — each reconcile operates against a different libvirt
 host over its own SSH connection.
 
-**Ephemeral storage model:** VMs managed by CAPLV are ephemeral — created
+**Auto-sizing:** Hosts in the pool have varying CPU and memory capacity.
+Rather than requiring operators to manually size each VM, CAPLV can
+auto-size from the host: if `spec.domain.vcpus` or `spec.domain.memoryMB`
+is omitted (zero), the controller uses the host's total resources minus
+a configurable reserve for incumbent workloads
+(`LibvirtHost.spec.reservedResources`, default: 2 vCPUs + 4 GB). The
+discovered capacity and available resources are reported in
+`LibvirtHost.status.capacity`.
+
+**Ephemeral storage model:** VMs managed by CAPLV are ephemeral —
 created and destroyed on demand by 5-Spot schedules. To avoid unnecessary disk I/O,
 operators can configure a tmpfs-backed libvirt storage pool for VM disks
 and ISOs. The `spec.rootDisk.baseImagePool` field allows the base image

@@ -25,9 +25,16 @@ type DomainInfo struct {
 	State string // "running", "shutoff", "paused", "crashed"
 }
 
+// NodeInfo holds host hardware information from virsh nodeinfo.
+type NodeInfo struct {
+	CPUs     int32 // total CPU threads (cores * threads * sockets)
+	MemoryKB int64 // total memory in KB
+}
+
 // Client defines the interface for interacting with a libvirt host.
 type Client interface {
 	Ping(ctx context.Context) error
+	GetNodeInfo(ctx context.Context) (*NodeInfo, error)
 	DomainExists(ctx context.Context, name string) (bool, error)
 	GetDomain(ctx context.Context, name string) (*DomainInfo, error)
 	DefineDomain(ctx context.Context, xmlDef string) (*DomainInfo, error)

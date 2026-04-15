@@ -62,14 +62,18 @@ const (
 // DomainSpec defines the virtual machine domain configuration.
 type DomainSpec struct {
 	// vcpus is the number of virtual CPUs to allocate.
-	// +required
-	// +kubebuilder:validation:Minimum=1
-	VCPUs int32 `json:"vcpus"`
+	// If zero or omitted, auto-sized from the LibvirtHost's available
+	// capacity (total vCPUs minus reserved).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	VCPUs int32 `json:"vcpus,omitempty"`
 
 	// memoryMB is the amount of memory in megabytes to allocate.
-	// +required
-	// +kubebuilder:validation:Minimum=256
-	MemoryMB int32 `json:"memoryMB"`
+	// If zero or omitted, auto-sized from the LibvirtHost's available
+	// capacity (total memory minus reserved).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MemoryMB int32 `json:"memoryMB,omitempty"`
 
 	// machine is the QEMU machine type.
 	// +optional
