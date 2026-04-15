@@ -20,10 +20,8 @@ only if the provisioning is minimally disruptive: the worker VMs must
 be fully ephemeral, come and go on a schedule, and ideally leave no
 trace on the host's persistent storage.
 
-Today, no maintained CAPI provider exists for libvirt. The archived
-`cluster-api-provider-libvirt` (Go, Kubernetes SIGs) was never
-production-ready and has been abandoned. Without CAPLV, operators must
-either:
+Today, no maintained CAPI provider exists for libvirt. Without CAPLV,
+operators must either:
 
 - Use Metal3 (complex Ironic dependency, additional infrastructure overhead)
 - Manually manage VM lifecycle outside of CAPI
