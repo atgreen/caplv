@@ -1,0 +1,150 @@
+---
+# CAPLV Host Setup Playbook
+#
+# Prepares a RHEL/Fedora host to be managed by CAPLV. Run with:
+#
+#   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml \
+#     --extra-vars "ssh_public_key='ssh-ed25519 AAAA...'"
+#
+# Optional variables:
+#   base_image_url    - URL to download a qcow2 base image
+#   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
+#   caplv_user        - service account name (default: caplv)
+#   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
+
+- name: Prepare host for CAPLV
+  hosts: all
+  become: true
+
+  vars:
+    caplv_user: caplv
+    storage_pool_path: /var/lib/libvirt/images
+    base_image_name: rhcos.qcow2
+    # base_image_url: https://...  # set via --extra-vars to download a base image
+
+  tasks:
+    # ── Packages ──────────────────────────────────────────────
+
+    - name: Install libvirt and UEFI firmware
+      ansible.builtin.dnf:
+        name:
+          - libvirt
+          - libvirt-daemon-kvm
+          - qemu-kvm
+          - edk2-ovmf
+        state: present
+
+    - name: Start and enable libvirtd
+      ansible.builtin.systemd:
+        name: libvirtd
+        enabled: true
+        state: started
+
+    # ── Service account ───────────────────────────────────────
+
+    - name: Create caplv service account
+      ansible.builtin.user:
+        name: "{{ caplv_user }}"
+        system: true
+        shell: /sbin/nologin
+        groups: libvirt
+        append: true
+        create_home: true
+
+    - name: Create .ssh directory
+      ansible.builtin.file:
+        path: "/home/{{ caplv_user }}/.ssh"
+        state: directory
+        owner: "{{ caplv_user }}"
+        group: "{{ caplv_user }}"
+        mode: "0700"
+
+    - name: Deploy SSH authorized key
+      ansible.builtin.copy:
+        content: "{{ ssh_public_key }}"
+        dest: "/home/{{ caplv_user }}/.ssh/authorized_keys"
+        owner: "{{ caplv_user }}"
+        group: "{{ caplv_user }}"
+        mode: "0600"
+      when: ssh_public_key is defined
+
+    # ── Sudoers ───────────────────────────────────────────────
+
+    - name: Configure sudoers for caplv
+      ansible.builtin.copy:
+        content: |
+          # CAPLV service account — restricted sudo for tmpfs and file operations.
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs tmpfs /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/umount /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/rmdir /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/tee /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/rm -f /run/caplv/*
+        dest: "/etc/sudoers.d/{{ caplv_user }}"
+        mode: "0440"
+        validate: "visudo -cf %s"
+
+    # ── Storage pool ──────────────────────────────────────────
+
+    - name: Ensure default storage pool directory exists
+      ansible.builtin.file:
+        path: "{{ storage_pool_path }}"
+        state: directory
+        mode: "0711"
+
+    - name: Check if default storage pool is defined
+      ansible.builtin.command: virsh pool-info default
+      register: pool_check
+      changed_when: false
+      failed_when: false
+
+    - name: Define default storage pool
+      ansible.builtin.command: >
+        virsh pool-define-as default dir --target {{ storage_pool_path }}
+      when: pool_check.rc != 0
+
+    - name: Start default storage pool
+      ansible.builtin.command: virsh pool-start default
+      when: pool_check.rc != 0
+
+    - name: Autostart default storage pool
+      ansible.builtin.command: virsh pool-autostart default
+      when: pool_check.rc != 0
+
+    # ── Base image ────────────────────────────────────────────
+
+    - name: Download base image
+      ansible.builtin.get_url:
+        url: "{{ base_image_url }}"
+        dest: "{{ storage_pool_path }}/{{ base_image_name }}"
+        mode: "0644"
+      when: base_image_url is defined
+
+    - name: Refresh storage pool
+      ansible.builtin.command: virsh pool-refresh default
+      changed_when: false
+      when: base_image_url is defined
+
+    # ── Verification ──────────────────────────────────────────
+
+    - name: Verify libvirtd is running
+      ansible.builtin.command: virsh version
+      changed_when: false
+
+    - name: Verify caplv user can access libvirt
+      ansible.builtin.command: >
+        su -s /bin/bash -c "virsh -c qemu:///system version" {{ caplv_user }}
+      changed_when: false
+
+    - name: Get SSH host key fingerprint
+      ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: host_key
+      changed_when: false
+
+    - name: Display setup summary
+      ansible.builtin.debug:
+        msg:
+          - "Host is ready for CAPLV."
+          - "SSH fingerprint: {{ host_key.stdout }}"
+          - "Use this in LibvirtHost.spec.hostKeyFingerprint (the SHA256:... part)."
+          - "URI: qemu+ssh://{{ caplv_user }}@{{ ansible_default_ipv4.address }}/system"
