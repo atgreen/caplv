@@ -132,7 +132,9 @@ func (r *LibvirtHostReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		})
 		return ctrl.Result{RequeueAfter: hostRequeueInterval}, nil
 	}
-	defer sshClient.Close()
+	if sshClient != nil {
+		defer sshClient.Close()
+	}
 
 	// Verify libvirt is usable by running virsh version over SSH.
 	libvirtClient := r.LibvirtClientFactory(sshClient)

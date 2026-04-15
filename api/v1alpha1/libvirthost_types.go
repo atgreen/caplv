@@ -42,8 +42,8 @@ type LibvirtHostSpec struct {
 
 	// secretRef is a reference to a Secret containing the SSH private key
 	// for authenticating to the libvirt host.
-	// +optional
-	SecretRef *SecretReference `json:"secretRef,omitempty"`
+	// +required
+	SecretRef *SecretReference `json:"secretRef"`
 
 	// hostKeyFingerprint is the SSH host key fingerprint (SHA256:...) used to
 	// verify the identity of the remote host.
