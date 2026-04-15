@@ -197,7 +197,7 @@ make test
 make manifests generate
 
 # Build container image (pure Go, no CGo)
-make docker-build IMG=ghcr.io/atgreen/caplv:latest  # uses podman by default
+make podman-build IMG=ghcr.io/atgreen/caplv:latest
 
 # Deploy to cluster
 make deploy IMG=ghcr.io/atgreen/caplv:latest

@@ -112,23 +112,19 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. podman build --platform linux/arm64). However, you must enable BuildKit for it.
 # More info: https://docs.podman.io/
-.PHONY: docker-build
-docker-build: ## Build container image with the manager.
+.PHONY: podman-build
+podman-build: ## Build container image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
 
-.PHONY: docker-push
-docker-push: ## Push container image with the manager.
+.PHONY: podman-push
+podman-push: ## Push container image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use podman buildx or buildah.
-# - have enabled BuildKit. More info: https://docs.podman.io/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
+# architectures. (i.e. make podman-buildx IMG=myregistry/mypoperator:0.0.1).
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: docker-buildx
-docker-buildx: ## Build and push container image for the manager for cross-platform support
+.PHONY: podman-buildx
+podman-buildx: ## Build and push container image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name caplv-builder
@@ -136,6 +132,12 @@ docker-buildx: ## Build and push container image for the manager for cross-platf
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm caplv-builder
 	rm Dockerfile.cross
+
+# Aliases for backward compatibility with kubebuilder docs.
+.PHONY: docker-build docker-push docker-buildx
+docker-build: podman-build
+docker-push: podman-push
+docker-buildx: podman-buildx
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
