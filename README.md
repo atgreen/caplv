@@ -38,7 +38,7 @@ operating against a different host over its own SSH connection.
 | CRD | Purpose |
 |-----|---------|
 | **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, host key fingerprint, OVMF paths). Periodically verified via SSH + `virsh version`. |
-| **LibvirtCluster** | CAPI contract stub — sets `status.ready: true` immediately. No infrastructure provisioned. |
+| **LibvirtCluster** | CAPI contract resource — verifies the control plane endpoint is reachable (TCP dial) before reporting ready. No infrastructure provisioned. |
 | **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. |
 
 ## Example
@@ -124,6 +124,10 @@ persistent storage is never touched.
   libvirt bindings later.
 - **Static IPs required** — every VM must declare its network identity upfront.
   No DHCP. This matches 5-Spot's model of predetermined machine configurations.
+- **Control plane health gate** — LibvirtCluster verifies the OpenShift API
+  endpoint is reachable (TCP dial, 60s recheck) before allowing machine
+  provisioning. Prevents spinning up hundreds of workers against a dead
+  control plane.
 - **Parallel at scale** — 50 concurrent reconcilers by default. Each host runs
   one VM, so there are no contention issues across parallel provisions.
 - **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
