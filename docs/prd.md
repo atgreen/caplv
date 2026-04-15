@@ -49,7 +49,7 @@ replication.
 
 **Scale model:** Each libvirt host runs exactly one CAPLV-managed worker
 VM. However, hundreds or thousands of hosts may come online simultaneously
-(e.g., 9am Monday when 5-Spot activates a schedule). CAPLV must process
+(e.g., when 5-Spot activates a schedule). CAPLV must process
 these in parallel — sequential reconciliation is not acceptable at this
 scale. The LibvirtMachine controller runs with configurable concurrent
 reconcilers (default: 50) so that machines targeting different hosts are
@@ -58,7 +58,7 @@ contention issues — each reconcile operates against a different libvirt
 host over its own SSH connection.
 
 **Ephemeral storage model:** VMs managed by CAPLV are ephemeral — created
-in the morning, destroyed in the evening. To avoid unnecessary disk I/O,
+created and destroyed on demand by 5-Spot schedules. To avoid unnecessary disk I/O,
 operators can configure a tmpfs-backed libvirt storage pool for VM disks
 and ISOs. The `spec.rootDisk.baseImagePool` field allows the base image
 (read-only, persistent) to live in a separate pool from the ephemeral

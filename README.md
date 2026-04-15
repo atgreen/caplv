@@ -10,14 +10,14 @@ rules.
 ## How It Works
 
 ```
-5-Spot: "It's 9am Monday — schedule is active"
+5-Spot: schedule becomes active
   → Creates CAPI Machine + CAPLV LibvirtMachine
     → CAPLV connects to libvirt host over SSH
       → Clones RHCOS base image, creates bootstrap artifact
         → Defines and starts KVM domain
           → VM boots, joins OpenShift cluster as worker
 
-5-Spot: "It's 5pm Friday — schedule is inactive"
+5-Spot: schedule becomes inactive
   → Deletes CAPI Machine
     → CAPLV destroys domain, cleans up disks and ISOs
 ```
@@ -93,7 +93,7 @@ spec:
 
 ### Ephemeral storage with tmpfs
 
-VMs are ephemeral — created in the morning, destroyed in the evening.
+VMs are ephemeral — created and destroyed on demand by 5-Spot schedules.
 To keep all per-VM artifacts in RAM:
 
 ```bash
