@@ -5,6 +5,9 @@
 #
 #   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml
 #
+# For RHEL 8, add to your inventory or command line:
+#   -e ansible_python_interpreter=/usr/libexec/platform-python
+#
 # Optional variables (--extra-vars):
 #   base_image_url    - URL to download a qcow2 base image
 #   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
