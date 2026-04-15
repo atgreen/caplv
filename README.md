@@ -151,12 +151,20 @@ spec:
   unhealthyConditions:
     - type: Ready
       status: "False"
-      timeout: 5m
+      timeout: 5m           # node was Ready, now isn't — remediate after 5 min
     - type: Ready
       status: "Unknown"
-      timeout: 5m
-  nodeStartupTimeout: 10m
+      timeout: 5m           # node stopped reporting — remediate after 5 min
+  nodeStartupTimeout: 10m   # time for a new VM to boot and join the cluster
 ```
+
+**Tuning `nodeStartupTimeout`:** This is how long CAPI waits for a newly
+provisioned VM to boot, run ignition, start kubelet, get its CSR approved,
+and report `Ready`. Typical CAPLV startup is 2-4 minutes (VM provision
+~30s, RHCOS boot ~60s, ignition + kubelet ~60s, CSR approval ~30s). The
+10-minute default gives comfortable headroom. Increase to 15m+ if your
+hosts are slow, base images are large, or the network path to the API
+server has high latency.
 
 This is the safety net for the known limitation that CAPLV does not
 monitor VM health after provisioning. Without it, dead VMs leave orphaned
