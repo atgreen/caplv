@@ -28,18 +28,20 @@ tmpfs storage pool, won't touch persistent storage on the device at all.
     → CAPLV destroys domain, cleans up disks and ISOs
 ```
 
-Each libvirt host runs exactly one CAPLV-managed VM. Hundreds or thousands
-of hosts can come online simultaneously — the controller runs up to 50
-concurrent reconcilers by default (`--max-concurrent-reconciles`), each
-operating against a different host over its own SSH connection.
+Each libvirt host runs exactly one CAPLV-managed VM — enforced by an
+admission webhook that rejects a second machine targeting the same host.
+Hundreds or thousands of hosts can come online simultaneously — the
+controller runs up to 50 concurrent reconcilers by default
+(`--max-concurrent-reconciles`), each operating against a different host
+over its own SSH connection.
 
 ## Custom Resources
 
 | CRD | Purpose |
 |-----|---------|
-| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, host key fingerprint, OVMF paths). Periodically verified via SSH + `virsh version`. |
+| **LibvirtHost** | Reusable connection details for a libvirt hypervisor (URI, SSH key, OVMF paths, reserved resources). Discovers host capacity via `virsh nodeinfo`. Health-checked only while machines are active. |
 | **LibvirtCluster** | CAPI contract resource — verifies the control plane endpoint is reachable (TCP dial) before reporting ready. No infrastructure provisioned. |
-| **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. |
+| **LibvirtMachine** | Core resource — a single KVM VM with static IP, UEFI firmware, and ignition or cloud-init bootstrap. VM size can be auto-derived from host capacity. One per host (webhook-enforced). |
 
 ## Example
 
@@ -55,7 +57,15 @@ spec:
   secretRef:
     name: rhel-host-01-ssh-key
   hostKeyFingerprint: "SHA256:abc123..."
+  reservedResources:             # leave this much for the incumbent workload
+    vcpus: 2                     # default: 2
+    memoryMB: 4096               # default: 4096
+  healthCheckIntervalSeconds: 300  # default: 300 (5 min), only while machines exist
 ```
+
+The controller discovers total host capacity via `virsh nodeinfo` and
+reports available resources (total minus reserved) in
+`status.capacity.availableVCPUs` / `status.capacity.availableMemoryMB`.
 
 ### Schedule a worker via 5-Spot
 
@@ -77,9 +87,7 @@ spec:
     spec:
       hostRef:
         name: rhel-host-01
-      domain:
-        vcpus: 4
-        memoryMB: 8192
+      domain: {}                   # auto-sized from host capacity minus reserved
       rootDisk:
         size: "100Gi"
         storagePool: "vm-disks"
@@ -158,6 +166,11 @@ Node objects in the cluster.
 - **virsh-over-SSH** — pure Go binary (`CGO_ENABLED=0`), distroless container.
   No `libvirt-dev`, no CGo. The `Client` interface allows swapping to native
   libvirt bindings later.
+- **One VM per host** — enforced by admission webhook. Each LibvirtHost runs
+  at most one CAPLV-managed VM. No contention, no resource accounting complexity.
+- **Auto-sizing** — omit `vcpus` and `memoryMB` and CAPLV sizes the VM from
+  the host's available capacity (total minus `reservedResources`). Hosts with
+  varying specs just work.
 - **Static IPs required** — every VM must declare its network identity upfront.
   No DHCP. This matches 5-Spot's model of predetermined machine configurations.
 - **Control plane health gate** — LibvirtCluster verifies the OpenShift API
