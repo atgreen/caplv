@@ -113,6 +113,11 @@ func (s *MachineScope) ProviderID() string {
 	return fmt.Sprintf("libvirt:///%s/%s", s.LibvirtHost.Name, s.DomainName())
 }
 
+// IgnitionFilePath returns the path for the ignition JSON file on the host.
+func (s *MachineScope) IgnitionFilePath() string {
+	return fmt.Sprintf("/run/caplv/%s/ignition.json", s.ArtifactBaseName())
+}
+
 // EphemeralPoolName returns the name for the per-machine tmpfs storage pool.
 func (s *MachineScope) EphemeralPoolName() string {
 	return s.ArtifactBaseName() + "-pool"

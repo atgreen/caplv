@@ -51,5 +51,7 @@ type Client interface {
 	UploadVolumeFromBytes(ctx context.Context, pool, name string, data []byte) error
 	DeleteVolume(ctx context.Context, pool, name string) error
 	GetVolumePath(ctx context.Context, pool, name string) (string, error)
+	WriteRemoteFile(ctx context.Context, path string, data []byte) error
+	DeleteRemoteFile(ctx context.Context, path string) error
 	Close() error
 }

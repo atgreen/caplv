@@ -423,6 +423,41 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 	return c.runVirsh(ctx, "vol-path", name, "--pool", pool)
 }
 
+// WriteRemoteFile writes data to a file on the remote host via SSH.
+func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
+	// Ensure parent directory exists.
+	dir := path[:strings.LastIndex(path, "/")]
+	dirSession, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session for mkdir: %w", err)
+	}
+	_ = dirSession.Run(fmt.Sprintf("mkdir -p %s", dir))
+	dirSession.Close()
+
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session for write: %w", err)
+	}
+	session.Stdin = bytes.NewReader(data)
+	if err := session.Run(fmt.Sprintf("cat > %s", path)); err != nil {
+		session.Close()
+		return fmt.Errorf("write remote file %s: %w", path, err)
+	}
+	session.Close()
+	return nil
+}
+
+// DeleteRemoteFile deletes a file on the remote host via SSH.
+func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session for delete: %w", err)
+	}
+	_ = session.Run(fmt.Sprintf("rm -f %s", path))
+	session.Close()
+	return nil
+}
+
 // Close closes the underlying SSH connection.
 func (c *VirshClient) Close() error {
 	if c.sshClient != nil {

@@ -30,7 +30,8 @@ type DomainXMLParams struct {
 	NVRAMPath        string
 	RootDiskPath     string
 	RootDiskBus      string
-	BootstrapISOPath string
+	IgnitionPath     string // path to ignition JSON on host — delivered via fw_cfg
+	BootstrapISOPath string // path to cloud-init NoCloud ISO — attached as cdrom
 	AdditionalDisks  []DiskParam
 	NetworkType      string // "bridge" or "network"
 	NetworkName      string
@@ -47,16 +48,27 @@ type DiskParam struct {
 // XML struct types matching the libvirt domain XML schema.
 
 type domainXML struct {
-	XMLName  xml.Name       `xml:"domain"`
-	Type     string         `xml:"type,attr"`
-	Name     string         `xml:"name"`
-	UUID     string         `xml:"uuid,omitempty"`
-	Memory   domainMemory   `xml:"memory"`
-	VCPU     domainVCPU     `xml:"vcpu"`
-	OS       domainOS       `xml:"os"`
-	Features domainFeatures `xml:"features"`
-	CPU      domainCPU      `xml:"cpu"`
-	Devices  domainDevices  `xml:"devices"`
+	XMLName  xml.Name        `xml:"domain"`
+	Type     string          `xml:"type,attr"`
+	Name     string          `xml:"name"`
+	UUID     string          `xml:"uuid,omitempty"`
+	Memory   domainMemory    `xml:"memory"`
+	VCPU     domainVCPU      `xml:"vcpu"`
+	SysInfo  *domainSysInfo  `xml:"sysinfo,omitempty"`
+	OS       domainOS        `xml:"os"`
+	Features domainFeatures  `xml:"features"`
+	CPU      domainCPU       `xml:"cpu"`
+	Devices  domainDevices   `xml:"devices"`
+}
+
+type domainSysInfo struct {
+	Type    string              `xml:"type,attr"`
+	Entries []domainSysInfoEntry `xml:"entry"`
+}
+
+type domainSysInfoEntry struct {
+	Name string `xml:"name,attr"`
+	File string `xml:"file,attr"`
 }
 
 type domainMemory struct {
@@ -196,7 +208,8 @@ func GenerateDomainXML(params DomainXMLParams) (string, error) {
 			Placement: "static",
 			Value:     params.VCPUs,
 		},
-		OS: buildOS(params),
+		SysInfo: buildSysInfo(params),
+		OS:      buildOS(params),
 		Features: domainFeatures{
 			ACPI: &struct{}{},
 			APIC: &struct{}{},
@@ -212,6 +225,19 @@ func GenerateDomainXML(params DomainXMLParams) (string, error) {
 		return "", err
 	}
 	return xml.Header + string(output), nil
+}
+
+// buildSysInfo creates the sysinfo element for fw_cfg ignition delivery.
+func buildSysInfo(params DomainXMLParams) *domainSysInfo {
+	if params.IgnitionPath == "" {
+		return nil
+	}
+	return &domainSysInfo{
+		Type: "fwcfg",
+		Entries: []domainSysInfoEntry{
+			{Name: "opt/com.coreos/config", File: params.IgnitionPath},
+		},
+	}
 }
 
 func buildOS(params DomainXMLParams) domainOS {

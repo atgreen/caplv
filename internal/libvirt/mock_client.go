@@ -38,6 +38,8 @@ type MockClient struct {
 	UploadVolumeFromBytesFn        func(ctx context.Context, pool, name string, data []byte) error
 	DeleteVolumeFn                 func(ctx context.Context, pool, name string) error
 	GetVolumePathFn                func(ctx context.Context, pool, name string) (string, error)
+	WriteRemoteFileFn              func(ctx context.Context, path string, data []byte) error
+	DeleteRemoteFileFn             func(ctx context.Context, path string) error
 	CloseFn                        func() error
 }
 
@@ -183,6 +185,22 @@ func (m *MockClient) GetVolumePath(ctx context.Context, pool, name string) (stri
 		return m.GetVolumePathFn(ctx, pool, name)
 	}
 	return "", nil
+}
+
+// WriteRemoteFile delegates to WriteRemoteFileFn or returns nil.
+func (m *MockClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
+	if m.WriteRemoteFileFn != nil {
+		return m.WriteRemoteFileFn(ctx, path, data)
+	}
+	return nil
+}
+
+// DeleteRemoteFile delegates to DeleteRemoteFileFn or returns nil.
+func (m *MockClient) DeleteRemoteFile(ctx context.Context, path string) error {
+	if m.DeleteRemoteFileFn != nil {
+		return m.DeleteRemoteFileFn(ctx, path)
+	}
+	return nil
 }
 
 // Close delegates to CloseFn or returns nil.

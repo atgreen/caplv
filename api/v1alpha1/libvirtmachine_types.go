@@ -204,8 +204,14 @@ type ManagedArtifacts struct {
 	RootDiskVolume string `json:"rootDiskVolume,omitempty"`
 
 	// bootstrapISO is the name of the bootstrap ISO volume in the storage pool.
+	// Only used for cloud-init bootstrap format.
 	// +optional
 	BootstrapISO string `json:"bootstrapISO,omitempty"`
+
+	// ignitionFile is the path to the ignition JSON file on the host.
+	// Only used for ignition bootstrap format (delivered via fw_cfg).
+	// +optional
+	IgnitionFile string `json:"ignitionFile,omitempty"`
 
 	// nvramPath is the path to the NVRAM file on the host.
 	// +optional

@@ -367,8 +367,9 @@ spec:
                       type: string
                     type: array
                   bootstrapISO:
-                    description: bootstrapISO is the name of the bootstrap ISO volume
-                      in the storage pool.
+                    description: |-
+                      bootstrapISO is the name of the bootstrap ISO volume in the storage pool.
+                      Only used for cloud-init bootstrap format.
                     type: string
                   domainName:
                     description: domainName is the name of the libvirt domain.
@@ -377,6 +378,11 @@ spec:
                     description: |-
                       ephemeralPoolName is the name of the tmpfs pool created by CAPLV.
                       Only set when spec.rootDisk.ephemeralPool is true.
+                    type: string
+                  ignitionFile:
+                    description: |-
+                      ignitionFile is the path to the ignition JSON file on the host.
+                      Only used for ignition bootstrap format (delivered via fw_cfg).
                     type: string
                   nvramPath:
                     description: nvramPath is the path to the NVRAM file on the host.

@@ -241,9 +241,9 @@ Node objects in the cluster.
   mount and libvirt pool on demand, destroys both on cleanup. No host setup
   required, no persistent storage touched, RAM reclaimed when the VM goes away.
 - **Bootstrap pass-through** — CAPLV does not modify ignition or cloud-init data.
-  Network configuration is the bootstrap provider's responsibility. Phase 1 uses
-  an attached ignition ISO; the target OpenShift flow is RHCOS live installer
-  with `coreos-installer` semantics (Phase 1.5).
+  Network configuration is the bootstrap provider's responsibility. For ignition
+  (OpenShift/RHCOS), the config is delivered via QEMU `fw_cfg` — the standard
+  libvirt method, no ISO needed. For cloud-init, a NoCloud ISO is created.
 - **Deterministic artifact naming** — domain names, disk volumes, and ISOs are
   named `<namespace>-<cluster>-<machine>`. Artifacts can be rediscovered after a
   controller crash without relying on status writes.

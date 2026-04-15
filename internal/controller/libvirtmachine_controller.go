@@ -322,41 +322,51 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		log.Info("Created root disk volume", "volume", rootDiskVolume, "duration", time.Since(diskStart).String())
 	}
 
-	// Step 2: Create bootstrap ISO if it does not exist.
-	isoExists, err := libvirtClient.VolumeExists(ctx, storagePool, bootstrapISO)
+	// Step 2: Prepare bootstrap data.
+	ignitionFilePath := machineScope.IgnitionFilePath()
+	bootstrapData, err := machineScope.GetBootstrapData(ctx)
 	if err != nil {
-		return r.handleLibvirtError(libvirtMachine, err, "checking bootstrap ISO")
+		return ctrl.Result{}, fmt.Errorf("failed to get bootstrap data: %w", err)
 	}
-	if !isoExists {
-		log.Info("Creating bootstrap ISO", "iso", bootstrapISO)
-		isoStart := time.Now()
-		bootstrapData, err := machineScope.GetBootstrapData(ctx)
+
+	switch libvirtMachine.Spec.BootstrapFormat {
+	case infrav1.BootstrapFormatIgnition:
+		// Write ignition JSON to host filesystem for fw_cfg delivery.
+		log.Info("Writing ignition config to host", "path", ignitionFilePath)
+		bootstrapStart := time.Now()
+		if err := libvirtClient.WriteRemoteFile(ctx, ignitionFilePath, bootstrapData); err != nil {
+			log.Error(err, "Failed to write ignition file", "path", ignitionFilePath)
+			return r.handleLibvirtError(libvirtMachine, err, "writing ignition file")
+		}
+		log.Info("Wrote ignition config", "path", ignitionFilePath, "size", len(bootstrapData), "duration", time.Since(bootstrapStart).String())
+
+	case infrav1.BootstrapFormatCloudInit:
+		// Create NoCloud ISO and upload to storage pool.
+		isoExists, err := libvirtClient.VolumeExists(ctx, storagePool, bootstrapISO)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to get bootstrap data: %w", err)
+			return r.handleLibvirtError(libvirtMachine, err, "checking bootstrap ISO")
+		}
+		if !isoExists {
+			log.Info("Creating cloud-init ISO", "iso", bootstrapISO)
+			bootstrapStart := time.Now()
+			isoData, err := r.ISOBuilder.BuildCloudInitISO(bootstrapData, domainName, domainName)
+			if err != nil {
+				log.Error(err, "Terminal error", "operation", "building cloud-init ISO", "reason", infrav1.ReasonInvalidBootstrapData)
+				return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
+					fmt.Sprintf("failed to build cloud-init ISO: %v", err))
+			}
+			if err := libvirtClient.UploadVolumeFromBytes(ctx, storagePool, bootstrapISO, isoData); err != nil {
+				log.Error(err, "Failed to upload cloud-init ISO", "iso", bootstrapISO)
+				return r.handleLibvirtError(libvirtMachine, err, "uploading cloud-init ISO")
+			}
+			log.Info("Created cloud-init ISO", "iso", bootstrapISO, "duration", time.Since(bootstrapStart).String())
 		}
 
-		var isoData []byte
-		switch libvirtMachine.Spec.BootstrapFormat {
-		case infrav1.BootstrapFormatIgnition:
-			isoData, err = r.ISOBuilder.BuildIgnitionISO(bootstrapData)
-		case infrav1.BootstrapFormatCloudInit:
-			isoData, err = r.ISOBuilder.BuildCloudInitISO(bootstrapData, domainName, domainName)
-		default:
-			log.Error(fmt.Errorf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat),
-				"Terminal error", "operation", "building bootstrap ISO", "reason", infrav1.ReasonInvalidBootstrapData)
-			return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
-				fmt.Sprintf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat))
-		}
-		if err != nil {
-			log.Error(err, "Terminal error", "operation", "building bootstrap ISO", "reason", infrav1.ReasonInvalidBootstrapData)
-			return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
-				fmt.Sprintf("failed to build ISO: %v", err))
-		}
-		if err := libvirtClient.UploadVolumeFromBytes(ctx, storagePool, bootstrapISO, isoData); err != nil {
-			log.Error(err, "Failed to upload bootstrap ISO", "iso", bootstrapISO)
-			return r.handleLibvirtError(libvirtMachine, err, "uploading bootstrap ISO")
-		}
-		log.Info("Created bootstrap ISO", "iso", bootstrapISO, "duration", time.Since(isoStart).String())
+	default:
+		log.Error(fmt.Errorf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat),
+			"Terminal error", "operation", "preparing bootstrap", "reason", infrav1.ReasonInvalidBootstrapData)
+		return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
+			fmt.Sprintf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat))
 	}
 
 	// Step 3: Create additional disks if they do not exist.
@@ -399,28 +409,36 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		if err != nil {
 			return r.handleLibvirtError(libvirtMachine, err, "getting root disk path")
 		}
-		isoPath, err := libvirtClient.GetVolumePath(ctx, storagePool, bootstrapISO)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "getting ISO path")
+
+		xmlParams := libvirt.DomainXMLParams{
+			Name:            domainName,
+			VCPUs:           resolvedVCPUs,
+			MemoryKB:        int64(resolvedMemoryMB) * memoryMBToKBMultiplier,
+			Machine:         libvirtMachine.Spec.Domain.Machine,
+			Firmware:        string(libvirtMachine.Spec.Domain.Firmware),
+			FirmwarePath:    libvirtHost.Spec.FirmwarePath,
+			NVRAMPath:       nvramPath,
+			RootDiskPath:    rootDiskPath,
+			RootDiskBus:     libvirtMachine.Spec.RootDisk.Bus,
+			AdditionalDisks: additionalDiskParams,
+			NetworkType:     string(libvirtMachine.Spec.Network.Type),
+			NetworkName:     libvirtMachine.Spec.Network.Name,
+			NetworkModel:    libvirtMachine.Spec.Network.Model,
+			MACAddress:      libvirtMachine.Spec.Network.MACAddress,
 		}
 
-		xmlDef, err := libvirt.GenerateDomainXML(libvirt.DomainXMLParams{
-			Name:             domainName,
-			VCPUs:            resolvedVCPUs,
-			MemoryKB:         int64(resolvedMemoryMB) * memoryMBToKBMultiplier,
-			Machine:          libvirtMachine.Spec.Domain.Machine,
-			Firmware:         string(libvirtMachine.Spec.Domain.Firmware),
-			FirmwarePath:     libvirtHost.Spec.FirmwarePath,
-			NVRAMPath:        nvramPath,
-			RootDiskPath:     rootDiskPath,
-			RootDiskBus:      libvirtMachine.Spec.RootDisk.Bus,
-			BootstrapISOPath: isoPath,
-			AdditionalDisks:  additionalDiskParams,
-			NetworkType:      string(libvirtMachine.Spec.Network.Type),
-			NetworkName:      libvirtMachine.Spec.Network.Name,
-			NetworkModel:     libvirtMachine.Spec.Network.Model,
-			MACAddress:       libvirtMachine.Spec.Network.MACAddress,
-		})
+		switch libvirtMachine.Spec.BootstrapFormat {
+		case infrav1.BootstrapFormatIgnition:
+			xmlParams.IgnitionPath = ignitionFilePath
+		case infrav1.BootstrapFormatCloudInit:
+			isoPath, err := libvirtClient.GetVolumePath(ctx, storagePool, bootstrapISO)
+			if err != nil {
+				return r.handleLibvirtError(libvirtMachine, err, "getting cloud-init ISO path")
+			}
+			xmlParams.BootstrapISOPath = isoPath
+		}
+
+		xmlDef, err := libvirt.GenerateDomainXML(xmlParams)
 		if err != nil {
 			log.Error(err, "Terminal error", "operation", "generating domain XML", "reason", infrav1.ReasonSpecMismatch)
 			return r.setTerminalError(libvirtMachine, infrav1.ReasonSpecMismatch,
@@ -461,9 +479,14 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	artifacts := &infrav1.ManagedArtifacts{
 		DomainName:            domainName,
 		RootDiskVolume:        rootDiskVolume,
-		BootstrapISO:          bootstrapISO,
 		NVRAMPath:             nvramPath,
 		AdditionalDiskVolumes: additionalDiskVolumes,
+	}
+	switch libvirtMachine.Spec.BootstrapFormat {
+	case infrav1.BootstrapFormatIgnition:
+		artifacts.IgnitionFile = ignitionFilePath
+	case infrav1.BootstrapFormatCloudInit:
+		artifacts.BootstrapISO = bootstrapISO
 	}
 	if libvirtMachine.Spec.RootDisk.EphemeralPool {
 		artifacts.EphemeralPoolName = machineScope.EphemeralPoolName()
@@ -573,10 +596,19 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 		return ctrl.Result{}, fmt.Errorf("failed to delete root disk: %w", err)
 	}
 
-	// Delete bootstrap ISO.
-	log.Info("Deleting bootstrap ISO", "iso", bootstrapISO)
-	if err := libvirtClient.DeleteVolume(ctx, storagePool, bootstrapISO); err != nil && !libvirt.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to delete bootstrap ISO: %w", err)
+	// Delete bootstrap artifacts.
+	switch libvirtMachine.Spec.BootstrapFormat {
+	case infrav1.BootstrapFormatIgnition:
+		ignitionFile := machineScope.IgnitionFilePath()
+		log.Info("Deleting ignition file", "path", ignitionFile)
+		if err := libvirtClient.DeleteRemoteFile(ctx, ignitionFile); err != nil {
+			log.Error(err, "Failed to delete ignition file (non-fatal)", "path", ignitionFile)
+		}
+	case infrav1.BootstrapFormatCloudInit:
+		log.Info("Deleting cloud-init ISO", "iso", bootstrapISO)
+		if err := libvirtClient.DeleteVolume(ctx, storagePool, bootstrapISO); err != nil && !libvirt.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to delete cloud-init ISO: %w", err)
+		}
 	}
 
 	// Delete additional disks.
