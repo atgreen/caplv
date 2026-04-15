@@ -117,6 +117,42 @@ libvirt storage pool when the VM is provisioned, and tears both down when
 the VM is deleted. RAM is only consumed while the VM exists. The host's
 persistent storage is never touched.
 
+### MachineHealthCheck (recommended)
+
+When the designed deletion path is followed (5-Spot → CAPI → CAPLV),
+CAPI drains pods and deletes the `Node` object from OpenShift before the
+VM is destroyed. Everything cleans up automatically.
+
+However, if a VM dies unexpectedly (host crash, OOM kill, admin
+`virsh destroy`), the `Node` object lingers in `NotReady` state in
+OpenShift indefinitely. A CAPI `MachineHealthCheck` detects this and
+triggers remediation — deleting the orphaned Machine and its stale Node.
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineHealthCheck
+metadata:
+  name: caplv-worker-health
+  namespace: default
+spec:
+  clusterName: my-ocp-cluster
+  selector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+  unhealthyConditions:
+    - type: Ready
+      status: "False"
+      timeout: 5m
+    - type: Ready
+      status: "Unknown"
+      timeout: 5m
+  nodeStartupTimeout: 10m
+```
+
+This is the safety net for the known limitation that CAPLV does not
+monitor VM health after provisioning. Without it, dead VMs leave orphaned
+Node objects in the cluster.
+
 ## Key Design Decisions
 
 - **virsh-over-SSH** — pure Go binary (`CGO_ENABLED=0`), distroless container.
@@ -234,8 +270,9 @@ wakes up and resumes checking. The interval is per-host via
 **No post-ready VM health monitoring.** Once a LibvirtMachine reaches
 `ready=true`, CAPLV does not currently recheck the domain state. If the
 VM dies after provisioning, `status.ready` remains `true` until the
-resource is deleted. Use CAPI `MachineHealthCheck` resources to detect
-node-level failures and trigger remediation.
+resource is deleted. Deploy a `MachineHealthCheck` (see example above) to
+detect node-level failures and trigger remediation. Without it, dead VMs
+leave orphaned `Node` objects and `Terminating` pods in OpenShift.
 
 ## Prerequisites
 
