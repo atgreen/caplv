@@ -67,6 +67,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var maxConcurrentReconciles int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -83,6 +84,9 @@ func main() {
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 50,
+		"Maximum number of LibvirtMachine reconciles running in parallel. "+
+			"Each targets a different host over its own SSH connection.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -183,11 +187,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.LibvirtMachineReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		SSHClientFactory:     sshClientFactory,
-		LibvirtClientFactory: libvirtClientFactory,
-		ISOBuilder:           iso.NewDiskfsBuilder(),
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		SSHClientFactory:        sshClientFactory,
+		LibvirtClientFactory:    libvirtClientFactory,
+		ISOBuilder:              iso.NewDiskfsBuilder(),
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtMachine")
 		os.Exit(1)

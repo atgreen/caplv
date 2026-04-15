@@ -47,6 +47,16 @@ known network identities on/off existing clusters. There is no need for
 dynamic IP allocation, MachineDeployment scaling, or template-based
 replication.
 
+**Scale model:** Each libvirt host runs exactly one CAPLV-managed worker
+VM. However, hundreds or thousands of hosts may come online simultaneously
+(e.g., 9am Monday when 5-Spot activates a schedule). CAPLV must process
+these in parallel — sequential reconciliation is not acceptable at this
+scale. The LibvirtMachine controller runs with configurable concurrent
+reconcilers (default: 50) so that machines targeting different hosts are
+provisioned simultaneously. Since each host runs one VM, there are no
+contention issues — each reconcile operates against a different libvirt
+host over its own SSH connection.
+
 ## 3. Target Users
 
 | User | Need |
@@ -612,6 +622,8 @@ Decision deferred to implementation.
 - OpenShift worker join validation
   - Machine approver, CSR handling, kubelet certs
   - Document OpenShift-specific prerequisites
+- Concurrent reconciliation (configurable, default 50 workers) for
+  parallel provisioning across hundreds/thousands of hosts
 - Leader election via controller-runtime (kubebuilder default)
 - CRD generation and deployment manifests
 - Unit and integration tests (envtest)

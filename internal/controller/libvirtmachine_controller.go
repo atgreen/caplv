@@ -30,6 +30,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -51,6 +52,8 @@ const (
 	memoryMBToKBMultiplier           = 1024
 )
 
+const defaultMaxConcurrentReconciles = 50
+
 // LibvirtMachineReconciler reconciles a LibvirtMachine object.
 type LibvirtMachineReconciler struct {
 	client.Client
@@ -58,6 +61,10 @@ type LibvirtMachineReconciler struct {
 	SSHClientFactory     SSHClientFactory
 	LibvirtClientFactory LibvirtClientFactory
 	ISOBuilder           iso.Builder
+	// MaxConcurrentReconciles is the number of machines reconciled in parallel.
+	// Each reconcile targets a different libvirt host over its own SSH connection.
+	// Default: 50.
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtmachines,verbs=get;list;watch;create;update;patch;delete
@@ -552,11 +559,17 @@ func (r *LibvirtMachineReconciler) setTerminalError(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LibvirtMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	concurrency := r.MaxConcurrentReconciles
+	if concurrency <= 0 {
+		concurrency = defaultMaxConcurrentReconciles
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.LibvirtMachine{}).
 		Watches(&clusterv1.Machine{}, handler.EnqueueRequestForOwner(
 			mgr.GetScheme(), mgr.GetRESTMapper(), &infrav1.LibvirtMachine{},
 		)).
+		WithOptions(controller.Options{MaxConcurrentReconciles: concurrency}).
 		Named("libvirtmachine").
 		Complete(r)
 }
