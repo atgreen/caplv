@@ -1,0 +1,158 @@
+/*
+Copyright 2026 Anthony Green.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package libvirt
+
+import "context"
+
+// MockClient implements Client for testing.
+type MockClient struct {
+	PingFn                         func(ctx context.Context) error
+	DomainExistsFn                 func(ctx context.Context, name string) (bool, error)
+	GetDomainFn                    func(ctx context.Context, name string) (*DomainInfo, error)
+	DefineDomainFn                 func(ctx context.Context, xmlDef string) (*DomainInfo, error)
+	StartDomainFn                  func(ctx context.Context, name string) error
+	DestroyDomainFn                func(ctx context.Context, name string) error
+	UndefineDomainFn               func(ctx context.Context, name string) error
+	VolumeExistsFn                 func(ctx context.Context, pool, name string) (bool, error)
+	CreateVolumeFromBackingStoreFn func(ctx context.Context, pool, name, backingPath string, sizeBytes int64) error
+	CloneVolumeFn                  func(ctx context.Context, pool, sourceName, targetName string) error
+	CreateVolumeFn                 func(ctx context.Context, pool, name string, sizeBytes int64) error
+	UploadVolumeFromBytesFn        func(ctx context.Context, pool, name string, data []byte) error
+	DeleteVolumeFn                 func(ctx context.Context, pool, name string) error
+	GetVolumePathFn                func(ctx context.Context, pool, name string) (string, error)
+	CloseFn                        func() error
+}
+
+// Ping delegates to PingFn or returns nil.
+func (m *MockClient) Ping(ctx context.Context) error {
+	if m.PingFn != nil {
+		return m.PingFn(ctx)
+	}
+	return nil
+}
+
+// DomainExists delegates to DomainExistsFn or returns false, nil.
+func (m *MockClient) DomainExists(ctx context.Context, name string) (bool, error) {
+	if m.DomainExistsFn != nil {
+		return m.DomainExistsFn(ctx, name)
+	}
+	return false, nil
+}
+
+// GetDomain delegates to GetDomainFn or returns an empty DomainInfo.
+func (m *MockClient) GetDomain(ctx context.Context, name string) (*DomainInfo, error) {
+	if m.GetDomainFn != nil {
+		return m.GetDomainFn(ctx, name)
+	}
+	return &DomainInfo{}, nil
+}
+
+// DefineDomain delegates to DefineDomainFn or returns an empty DomainInfo.
+func (m *MockClient) DefineDomain(ctx context.Context, xmlDef string) (*DomainInfo, error) {
+	if m.DefineDomainFn != nil {
+		return m.DefineDomainFn(ctx, xmlDef)
+	}
+	return &DomainInfo{}, nil
+}
+
+// StartDomain delegates to StartDomainFn or returns nil.
+func (m *MockClient) StartDomain(ctx context.Context, name string) error {
+	if m.StartDomainFn != nil {
+		return m.StartDomainFn(ctx, name)
+	}
+	return nil
+}
+
+// DestroyDomain delegates to DestroyDomainFn or returns nil.
+func (m *MockClient) DestroyDomain(ctx context.Context, name string) error {
+	if m.DestroyDomainFn != nil {
+		return m.DestroyDomainFn(ctx, name)
+	}
+	return nil
+}
+
+// UndefineDomain delegates to UndefineDomainFn or returns nil.
+func (m *MockClient) UndefineDomain(ctx context.Context, name string) error {
+	if m.UndefineDomainFn != nil {
+		return m.UndefineDomainFn(ctx, name)
+	}
+	return nil
+}
+
+// VolumeExists delegates to VolumeExistsFn or returns false, nil.
+func (m *MockClient) VolumeExists(ctx context.Context, pool, name string) (bool, error) {
+	if m.VolumeExistsFn != nil {
+		return m.VolumeExistsFn(ctx, pool, name)
+	}
+	return false, nil
+}
+
+// CreateVolumeFromBackingStore delegates to CreateVolumeFromBackingStoreFn or returns nil.
+func (m *MockClient) CreateVolumeFromBackingStore(ctx context.Context, pool, name, backingPath string, sizeBytes int64) error {
+	if m.CreateVolumeFromBackingStoreFn != nil {
+		return m.CreateVolumeFromBackingStoreFn(ctx, pool, name, backingPath, sizeBytes)
+	}
+	return nil
+}
+
+// CloneVolume delegates to CloneVolumeFn or returns nil.
+func (m *MockClient) CloneVolume(ctx context.Context, pool, sourceName, targetName string) error {
+	if m.CloneVolumeFn != nil {
+		return m.CloneVolumeFn(ctx, pool, sourceName, targetName)
+	}
+	return nil
+}
+
+// CreateVolume delegates to CreateVolumeFn or returns nil.
+func (m *MockClient) CreateVolume(ctx context.Context, pool, name string, sizeBytes int64) error {
+	if m.CreateVolumeFn != nil {
+		return m.CreateVolumeFn(ctx, pool, name, sizeBytes)
+	}
+	return nil
+}
+
+// UploadVolumeFromBytes delegates to UploadVolumeFromBytesFn or returns nil.
+func (m *MockClient) UploadVolumeFromBytes(ctx context.Context, pool, name string, data []byte) error {
+	if m.UploadVolumeFromBytesFn != nil {
+		return m.UploadVolumeFromBytesFn(ctx, pool, name, data)
+	}
+	return nil
+}
+
+// DeleteVolume delegates to DeleteVolumeFn or returns nil.
+func (m *MockClient) DeleteVolume(ctx context.Context, pool, name string) error {
+	if m.DeleteVolumeFn != nil {
+		return m.DeleteVolumeFn(ctx, pool, name)
+	}
+	return nil
+}
+
+// GetVolumePath delegates to GetVolumePathFn or returns empty string, nil.
+func (m *MockClient) GetVolumePath(ctx context.Context, pool, name string) (string, error) {
+	if m.GetVolumePathFn != nil {
+		return m.GetVolumePathFn(ctx, pool, name)
+	}
+	return "", nil
+}
+
+// Close delegates to CloseFn or returns nil.
+func (m *MockClient) Close() error {
+	if m.CloseFn != nil {
+		return m.CloseFn()
+	}
+	return nil
+}

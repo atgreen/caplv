@@ -1,0 +1,9 @@
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtMachine
+metadata:
+  labels:
+    app.kubernetes.io/name: capl
+    app.kubernetes.io/managed-by: kustomize
+  name: libvirtmachine-sample
+spec:
+  # TODO(user): Add fields here

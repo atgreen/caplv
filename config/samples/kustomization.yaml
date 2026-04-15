@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- infrastructure_v1alpha1_libvirthost.yaml
+- infrastructure_v1alpha1_libvirtcluster.yaml
+- infrastructure_v1alpha1_libvirtmachine.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

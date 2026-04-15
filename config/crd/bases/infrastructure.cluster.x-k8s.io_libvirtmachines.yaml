@@ -1,0 +1,378 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: libvirtmachines.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    kind: LibvirtMachine
+    listKind: LibvirtMachineList
+    plural: libvirtmachines
+    singular: libvirtmachine
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostRef.name
+      name: Host
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.domainState
+      name: State
+      type: string
+    - jsonPath: .spec.providerID
+      name: ProviderID
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          LibvirtMachine is the Schema for the libvirtmachines API.
+          It represents a virtual machine managed by libvirt as a Cluster API infrastructure machine.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of LibvirtMachine.
+            properties:
+              additionalDisks:
+                description: additionalDisks is an optional list of additional data
+                  disks to attach.
+                items:
+                  description: AdditionalDiskSpec defines an additional data disk.
+                  properties:
+                    bus:
+                      default: virtio
+                      description: bus is the disk bus type.
+                      type: string
+                    name:
+                      description: name is a unique identifier for this disk within
+                        the machine.
+                      type: string
+                    size:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: size is the desired size of the disk.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    storagePool:
+                      description: storagePool is the name of the libvirt storage
+                        pool to use.
+                      type: string
+                  required:
+                  - name
+                  - size
+                  - storagePool
+                  type: object
+                type: array
+              bootstrapFormat:
+                default: ignition
+                description: bootstrapFormat specifies the format of bootstrap data
+                  to generate.
+                enum:
+                - ignition
+                - cloud-init
+                type: string
+              domain:
+                description: domain defines the virtual machine domain configuration.
+                properties:
+                  firmware:
+                    default: uefi
+                    description: firmware is the firmware type for the virtual machine.
+                    enum:
+                    - uefi
+                    - bios
+                    type: string
+                  machine:
+                    default: q35
+                    description: machine is the QEMU machine type.
+                    type: string
+                  memoryMB:
+                    description: memoryMB is the amount of memory in megabytes to
+                      allocate.
+                    format: int32
+                    minimum: 256
+                    type: integer
+                  vcpus:
+                    description: vcpus is the number of virtual CPUs to allocate.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - memoryMB
+                - vcpus
+                type: object
+              hostRef:
+                description: hostRef is a reference to a LibvirtHost resource in the
+                  same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              network:
+                description: network defines the network configuration for the virtual
+                  machine.
+                properties:
+                  addresses:
+                    description: addresses is a list of static IP addresses in CIDR
+                      notation (e.g. 192.168.1.10/24).
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  dns:
+                    description: dns defines DNS configuration for the network.
+                    properties:
+                      nameservers:
+                        description: nameservers is a list of DNS server addresses.
+                        items:
+                          type: string
+                        type: array
+                      searchDomains:
+                        description: searchDomains is a list of DNS search domains.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  gateway:
+                    description: gateway is the default gateway address.
+                    type: string
+                  macAddress:
+                    description: macAddress is an optional MAC address to assign to
+                      the interface.
+                    type: string
+                  model:
+                    default: virtio
+                    description: model is the NIC model.
+                    type: string
+                  name:
+                    description: name is the name of the libvirt network or bridge
+                      device.
+                    minLength: 1
+                    type: string
+                  type:
+                    description: type is the type of libvirt network attachment.
+                    enum:
+                    - bridge
+                    - network
+                    type: string
+                required:
+                - addresses
+                - name
+                - type
+                type: object
+              providerID:
+                description: |-
+                  providerID is the identifier used by CAPI to reference this machine.
+                  Set by the controller after the domain is created.
+                type: string
+              rootDisk:
+                description: rootDisk defines the root disk configuration.
+                properties:
+                  baseImage:
+                    description: baseImage is the name of the base image volume to
+                      clone from.
+                    minLength: 1
+                    type: string
+                  bus:
+                    default: virtio
+                    description: bus is the disk bus type.
+                    type: string
+                  cloneStrategy:
+                    default: copy-on-write
+                    description: cloneStrategy defines how the root disk is cloned
+                      from the base image.
+                    enum:
+                    - copy-on-write
+                    - full-clone
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: size is the desired size of the root disk.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storagePool:
+                    description: storagePool is the name of the libvirt storage pool
+                      to use.
+                    minLength: 1
+                    type: string
+                required:
+                - baseImage
+                - size
+                - storagePool
+                type: object
+            required:
+            - bootstrapFormat
+            - domain
+            - hostRef
+            - network
+            - rootDisk
+            type: object
+          status:
+            description: status defines the observed state of LibvirtMachine.
+            properties:
+              addresses:
+                description: addresses is the list of addresses assigned to the machine.
+                items:
+                  description: MachineAddress contains information for the node's
+                    address.
+                  properties:
+                    address:
+                      description: The machine address.
+                      type: string
+                    type:
+                      description: Machine address type, one of Hostname, ExternalIP,
+                        InternalIP, ExternalDNS or InternalDNS.
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                type: array
+              conditions:
+                description: conditions represent the current state of the LibvirtMachine
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              domainState:
+                description: domainState is the current state of the libvirt domain
+                  (e.g. running, shutoff).
+                type: string
+              domainUUID:
+                description: domainUUID is the UUID of the libvirt domain.
+                type: string
+              failureMessage:
+                description: failureMessage is a human-readable description of the
+                  failure.
+                type: string
+              failureReason:
+                description: failureReason is a machine-readable string indicating
+                  the reason for a failure.
+                type: string
+              managedArtifacts:
+                description: managedArtifacts tracks the libvirt artifacts managed
+                  by the controller.
+                properties:
+                  additionalDiskVolumes:
+                    description: additionalDiskVolumes is a list of additional disk
+                      volume names.
+                    items:
+                      type: string
+                    type: array
+                  bootstrapISO:
+                    description: bootstrapISO is the name of the bootstrap ISO volume
+                      in the storage pool.
+                    type: string
+                  domainName:
+                    description: domainName is the name of the libvirt domain.
+                    type: string
+                  nvramPath:
+                    description: nvramPath is the path to the NVRAM file on the host.
+                    type: string
+                  rootDiskVolume:
+                    description: rootDiskVolume is the name of the root disk volume
+                      in the storage pool.
+                    type: string
+                type: object
+              ready:
+                description: ready indicates whether the machine infrastructure is
+                  ready.
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
