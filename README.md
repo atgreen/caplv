@@ -14,30 +14,6 @@ disruptive to these hosts: worker-node VMs are fully ephemeral and,
 when backed by a tmpfs storage pool, won't touch persistent storage
 on the device at all.
 
-## Deployment Model
-
-CAPLV runs on the **same OpenShift cluster** that the ephemeral worker
-VMs join. There is no separate management cluster.
-
-```
-┌──────────────────────────────────────────────────────┐
-│  OpenShift Cluster                                   │
-│                                                      │
-│  5-Spot → CAPI → CAPLV ───SSH───→ libvirt hosts     │
-│                                    (RHEL + KVM)      │
-│  Control plane nodes                                 │
-│  + ephemeral CAPLV worker nodes                      │
-└──────────────────────────────────────────────────────┘
-```
-
-This single-cluster model means:
-- **No cross-cluster credentials** — CAPI watches Nodes on the local cluster
-- **Machine-approver works natively** — it sees the CAPI Machine objects
-  and auto-approves CSRs from new worker nodes
-- **Worker ignition is local** — the cluster already has its own worker
-  ignition config for the bootstrap provider to reference
-- **MachineHealthCheck watches local Nodes** — no remote cluster access
-
 ## How It Works
 
 ```
@@ -53,6 +29,8 @@ This single-cluster model means:
     → CAPI drains pods, deletes the Node object
       → CAPLV destroys domain, cleans up disks and ISOs
 ```
+
+CAPLV runs on the same OpenShift cluster that the worker VMs join.
 
 Each libvirt host runs exactly one CAPLV-managed VM — enforced by an
 admission webhook that rejects a second machine targeting the same host.
@@ -243,10 +221,6 @@ Node objects in the cluster.
 
 ## Key Design Decisions
 
-- **Single-cluster model** — CAPLV runs on the same OpenShift cluster
-  that worker VMs join. No cross-cluster credentials, no remote kubeconfig
-  management. The machine-approver, MachineHealthCheck, and CAPI all
-  operate against the local API server.
 - **virsh-over-SSH** — pure Go binary (`CGO_ENABLED=0`), distroless container.
   No `libvirt-dev`, no CGo. The `Client` interface allows swapping to native
   libvirt bindings later.
