@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,8 +38,8 @@ import (
 )
 
 const (
-	clusterRequeueInterval       = 60 * time.Second
-	controlPlaneDialTimeout      = 5 * time.Second
+	clusterRequeueInterval  = 60 * time.Second
+	controlPlaneDialTimeout = 5 * time.Second
 )
 
 // LibvirtClusterReconciler reconciles a LibvirtCluster object.
@@ -97,7 +98,7 @@ func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Check control plane endpoint reachability via TCP dial.
 	endpoint := libvirtCluster.Spec.ControlPlaneEndpoint
-	addr := fmt.Sprintf("%s:%d", endpoint.Host, endpoint.Port)
+	addr := net.JoinHostPort(endpoint.Host, strconv.Itoa(int(endpoint.Port)))
 
 	conn, err := net.DialTimeout("tcp", addr, controlPlaneDialTimeout)
 	if err != nil {

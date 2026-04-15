@@ -48,21 +48,21 @@ type DiskParam struct {
 // XML struct types matching the libvirt domain XML schema.
 
 type domainXML struct {
-	XMLName  xml.Name        `xml:"domain"`
-	Type     string          `xml:"type,attr"`
-	Name     string          `xml:"name"`
-	UUID     string          `xml:"uuid,omitempty"`
-	Memory   domainMemory    `xml:"memory"`
-	VCPU     domainVCPU      `xml:"vcpu"`
-	SysInfo  *domainSysInfo  `xml:"sysinfo,omitempty"`
-	OS       domainOS        `xml:"os"`
-	Features domainFeatures  `xml:"features"`
-	CPU      domainCPU       `xml:"cpu"`
-	Devices  domainDevices   `xml:"devices"`
+	XMLName  xml.Name       `xml:"domain"`
+	Type     string         `xml:"type,attr"`
+	Name     string         `xml:"name"`
+	UUID     string         `xml:"uuid,omitempty"`
+	Memory   domainMemory   `xml:"memory"`
+	VCPU     domainVCPU     `xml:"vcpu"`
+	SysInfo  *domainSysInfo `xml:"sysinfo,omitempty"`
+	OS       domainOS       `xml:"os"`
+	Features domainFeatures `xml:"features"`
+	CPU      domainCPU      `xml:"cpu"`
+	Devices  domainDevices  `xml:"devices"`
 }
 
 type domainSysInfo struct {
-	Type    string              `xml:"type,attr"`
+	Type    string               `xml:"type,attr"`
 	Entries []domainSysInfoEntry `xml:"entry"`
 }
 
