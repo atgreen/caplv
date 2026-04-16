@@ -88,33 +88,33 @@ func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, 
 	ignition := specConfig
 
 	// Ensure storage.files exists.
-	storage, _ := ignition["storage"].(map[string]interface{})
+	storage, _ := ignition["storage"].(map[string]any)
 	if storage == nil {
-		storage = map[string]interface{}{}
+		storage = map[string]any{}
 		ignition["storage"] = storage
 	}
 
-	files, _ := storage["files"].([]interface{})
+	files, _ := storage["files"].([]any)
 
 	// Add /etc/ignition-machine-config-encapsulated.json — contains the
 	// full MachineConfig. The MCD and other first-boot services (like
 	// rhcos-fips) read this to determine configuration.
-	files = append(files, map[string]interface{}{
+	files = append(files, map[string]any{
 		"path":      "/etc/ignition-machine-config-encapsulated.json",
 		"mode":      0o420,
 		"overwrite": true,
-		"contents": map[string]interface{}{
+		"contents": map[string]any{
 			"source": "data:," + url.PathEscape(string(mcJSON)),
 		},
 	})
 
 	// Add /etc/mcs-machine-config-content.json — duplicate of the above,
 	// used by the MCD pull service as an alternative source.
-	files = append(files, map[string]interface{}{
+	files = append(files, map[string]any{
 		"path":      "/etc/mcs-machine-config-content.json",
 		"mode":      0o420,
 		"overwrite": true,
-		"contents": map[string]interface{}{
+		"contents": map[string]any{
 			"source": "data:," + url.PathEscape(string(mcJSON)),
 		},
 	})
