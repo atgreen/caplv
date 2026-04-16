@@ -28,12 +28,12 @@ import (
 // the Node with the Machine object.
 // Supports both ignition spec 2.x and 3.x formats.
 func InjectMachineMetadata(ignitionData []byte, hostname, providerID string) ([]byte, error) {
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(ignitionData, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse ignition config: %w", err)
 	}
 
-	ignSection, ok := config["ignition"].(map[string]interface{})
+	ignSection, ok := config["ignition"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("ignition config missing 'ignition' section")
 	}
@@ -73,7 +73,7 @@ func InjectHostname(ignitionData []byte, hostname string) ([]byte, error) {
 // the provider-id flag. On OpenShift, kubelet reads its flags from environment
 // files in /etc/kubernetes/kubelet-env, but the actual mechanism varies. The
 // systemd drop-in approach is the most reliable across versions.
-func injectKubeletProviderIDEnv(config map[string]interface{}, providerID string, isV3 bool) {
+func injectKubeletProviderIDEnv(config map[string]any, providerID string, isV3 bool) {
 	// Also inject a node-annotations file that the MCO can pick up.
 	// This ensures the providerID annotation is set even if kubelet
 	// doesn't process the flag.
@@ -82,14 +82,14 @@ func injectKubeletProviderIDEnv(config map[string]interface{}, providerID string
 		"data:,"+url.PathEscape(annotationContents), 0o644, isV3)
 }
 
-func injectFile(config map[string]interface{}, path, source string, mode int, isV3 bool) {
+func injectFile(config map[string]any, path, source string, mode int, isV3 bool) {
 	storage := ensureStorage(config)
 	files := getFiles(storage)
 
 	// Remove any existing entry at this path.
-	filtered := make([]interface{}, 0, len(files))
+	filtered := make([]any, 0, len(files))
 	for _, f := range files {
-		fm, ok := f.(map[string]interface{})
+		fm, ok := f.(map[string]any)
 		if ok {
 			if p, _ := fm["path"].(string); p == path {
 				continue
@@ -98,10 +98,10 @@ func injectFile(config map[string]interface{}, path, source string, mode int, is
 		filtered = append(filtered, f)
 	}
 
-	entry := map[string]interface{}{
+	entry := map[string]any{
 		"path": path,
 		"mode": mode,
-		"contents": map[string]interface{}{
+		"contents": map[string]any{
 			"source": source,
 		},
 	}
@@ -116,19 +116,19 @@ func injectFile(config map[string]interface{}, path, source string, mode int, is
 	storage["files"] = filtered
 }
 
-func ensureStorage(config map[string]interface{}) map[string]interface{} {
-	storage, ok := config["storage"].(map[string]interface{})
+func ensureStorage(config map[string]any) map[string]any {
+	storage, ok := config["storage"].(map[string]any)
 	if !ok {
-		storage = map[string]interface{}{}
+		storage = map[string]any{}
 		config["storage"] = storage
 	}
 	return storage
 }
 
-func getFiles(storage map[string]interface{}) []interface{} {
-	files, ok := storage["files"].([]interface{})
+func getFiles(storage map[string]any) []any {
+	files, ok := storage["files"].([]any)
 	if !ok {
-		return []interface{}{}
+		return []any{}
 	}
 	return files
 }

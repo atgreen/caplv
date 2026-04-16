@@ -48,10 +48,7 @@ func (b *DiskfsBuilder) BuildIgnitionISO(ignitionData []byte) ([]byte, error) {
 	defer os.Remove(tmpPath)
 
 	// Calculate disk size: data + overhead, rounded up to block boundary, minimum 2MB.
-	diskSize := int64(len(ignitionData)) + isoOverheadBytes
-	if diskSize < minISOSize {
-		diskSize = minISOSize
-	}
+	diskSize := max(int64(len(ignitionData))+isoOverheadBytes, minISOSize)
 	diskSize = roundUpToBlock(diskSize, isoBlockSize)
 
 	d, err := diskfs.Create(tmpPath, diskSize, diskfs.SectorSize(isoBlockSize))

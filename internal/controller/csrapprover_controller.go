@@ -85,11 +85,11 @@ func (r *CSRApproverReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Approve the CSR.
 	log.Info("Auto-approving CSR for CAPLV-managed node", "node", nodeName, "signer", csr.Spec.SignerName)
 	csr.Status.Conditions = append(csr.Status.Conditions, certificatesv1.CertificateSigningRequestCondition{
-		Type:               certificatesv1.CertificateApproved,
-		Status:             corev1.ConditionTrue,
-		Reason:             "CAPLVAutoApproved",
-		Message:            fmt.Sprintf("CSR auto-approved by CAPLV for managed node %s", nodeName),
-		LastUpdateTime:     metav1.Now(),
+		Type:           certificatesv1.CertificateApproved,
+		Status:         corev1.ConditionTrue,
+		Reason:         "CAPLVAutoApproved",
+		Message:        fmt.Sprintf("CSR auto-approved by CAPLV for managed node %s", nodeName),
+		LastUpdateTime: metav1.Now(),
 	})
 
 	if err := r.Client.SubResource("approval").Update(ctx, csr); err != nil {

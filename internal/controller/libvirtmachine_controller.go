@@ -580,7 +580,7 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 func (r *LibvirtMachineReconciler) reconcileDelete(
 	ctx context.Context,
 	libvirtMachine *infrav1.LibvirtMachine,
-	machine *clusterv1.Machine,
+	_ *clusterv1.Machine,
 	cluster *clusterv1.Cluster,
 	libvirtCluster *infrav1.LibvirtCluster,
 	libvirtHost *infrav1.LibvirtHost,

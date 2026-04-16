@@ -151,7 +151,7 @@ func (s *MachineScope) GetBootstrapData(ctx context.Context) ([]byte, error) {
 // GetAddresses extracts IP addresses from the LibvirtMachine spec, stripping
 // any CIDR prefix length.
 func (s *MachineScope) GetAddresses() []clusterv1.MachineAddress {
-	var addresses []clusterv1.MachineAddress
+	addresses := make([]clusterv1.MachineAddress, 0, len(s.LibvirtMachine.Spec.Network.Addresses))
 	for _, addr := range s.LibvirtMachine.Spec.Network.Addresses {
 		ip := addr
 		if idx := strings.Index(addr, "/"); idx > 0 {

@@ -22,8 +22,13 @@ import (
 	"testing"
 )
 
+const (
+	testIgnitionV3Input = `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	testEtcHostnamePath = "/etc/hostname"
+)
+
 func TestInjectHostnameV3(t *testing.T) {
-	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	input := testIgnitionV3Input
 	result, err := InjectHostname([]byte(input), "my-worker")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -38,7 +43,7 @@ func TestInjectHostnameV3(t *testing.T) {
 	found := false
 	for _, f := range files {
 		fm := f.(map[string]interface{})
-		if fm["path"] == "/etc/hostname" {
+		if fm["path"] == testEtcHostnamePath {
 			contents := fm["contents"].(map[string]interface{})
 			source := contents["source"].(string)
 			if !strings.Contains(source, "my-worker") {
@@ -68,7 +73,7 @@ func TestInjectHostnameV2(t *testing.T) {
 	found := false
 	for _, f := range files {
 		fm := f.(map[string]interface{})
-		if fm["path"] == "/etc/hostname" {
+		if fm["path"] == testEtcHostnamePath {
 			found = true
 		}
 	}
@@ -91,7 +96,7 @@ func TestInjectHostnameReplacesExisting(t *testing.T) {
 	count := 0
 	for _, f := range files {
 		fm := f.(map[string]interface{})
-		if fm["path"] == "/etc/hostname" {
+		if fm["path"] == testEtcHostnamePath {
 			count++
 			contents := fm["contents"].(map[string]interface{})
 			if !strings.Contains(contents["source"].(string), "new-name") {
@@ -105,7 +110,7 @@ func TestInjectHostnameReplacesExisting(t *testing.T) {
 }
 
 func TestInjectMachineMetadata(t *testing.T) {
-	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	input := testIgnitionV3Input
 	result, err := InjectMachineMetadata([]byte(input), "my-worker", "libvirt:///laptop/my-worker")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -124,7 +129,7 @@ func TestInjectMachineMetadata(t *testing.T) {
 		paths[fm["path"].(string)] = true
 	}
 
-	if !paths["/etc/hostname"] {
+	if !paths[testEtcHostnamePath] {
 		t.Error("expected /etc/hostname file")
 	}
 	if !paths["/etc/systemd/system/kubelet.service.d/90-provider-id.conf"] {
@@ -136,7 +141,7 @@ func TestInjectMachineMetadata(t *testing.T) {
 }
 
 func TestInjectMachineMetadataProviderIDContent(t *testing.T) {
-	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	input := testIgnitionV3Input
 	result, err := InjectMachineMetadata([]byte(input), "", "libvirt:///host/domain")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

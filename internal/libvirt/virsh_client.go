@@ -156,7 +156,7 @@ func (c *VirshClient) GetNodeInfo(ctx context.Context) (*NodeInfo, error) {
 	}
 	info := &NodeInfo{}
 	var cores, threads, sockets int64
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
 			continue
@@ -206,7 +206,7 @@ func (c *VirshClient) GetDomain(ctx context.Context, name string) (*DomainInfo, 
 		return nil, err
 	}
 	info := &DomainInfo{Name: name}
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
 			continue
