@@ -16,25 +16,20 @@ limitations under the License.
 
 // Package mcs provides a client for fetching OpenShift worker ignition
 // configs. When CAPLV runs on an OpenShift cluster, it reads the rendered
-// worker MachineConfig directly from the Kubernetes API, eliminating the
-// need for users to manually create bootstrap secrets.
+// worker MachineConfig from the Kubernetes API and wraps it into a
+// bootstrap ignition config that the Machine Config Daemon can consume.
 package mcs
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-var machineConfigPoolGVR = schema.GroupVersionResource{
-	Group:    "machineconfiguration.openshift.io",
-	Version:  "v1",
-	Resource: "machineconfigpools",
-}
 
 var machineConfigGVK = schema.GroupVersionKind{
 	Group:   "machineconfiguration.openshift.io",
@@ -42,10 +37,14 @@ var machineConfigGVK = schema.GroupVersionKind{
 	Kind:    "MachineConfig",
 }
 
-// FetchWorkerIgnition reads the rendered worker ignition config from the
-// OpenShift MachineConfig API. It looks up the current rendered worker
-// MachineConfig name from the worker MachineConfigPool, then extracts
-// the ignition config from spec.config.
+// FetchWorkerIgnition reads the rendered worker MachineConfig from the
+// OpenShift API and wraps it into a bootstrap ignition config that the
+// Machine Config Daemon can consume on first boot.
+//
+// The MCS normally serves this via HTTPS on port 22623, but that
+// endpoint is only reachable from nodes (not pods). Instead, we read
+// the MachineConfig API directly and construct the same ignition
+// structure the MCS would serve.
 func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, error) {
 	// Get the worker MachineConfigPool to find the rendered config name.
 	mcp := &unstructured.Unstructured{}
@@ -58,7 +57,7 @@ func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, 
 		return nil, fmt.Errorf("failed to get worker MachineConfigPool: %w", err)
 	}
 
-	// Extract the rendered config name from status.configuration.name.
+	// Extract the rendered config name.
 	renderedName, found, err := unstructured.NestedString(mcp.Object, "status", "configuration", "name")
 	if err != nil || !found || renderedName == "" {
 		return nil, fmt.Errorf("worker MachineConfigPool has no rendered configuration")
@@ -71,20 +70,59 @@ func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, 
 		return nil, fmt.Errorf("failed to get rendered MachineConfig %s: %w", renderedName, err)
 	}
 
-	// Extract spec.config (the ignition config).
-	config, found, err := unstructured.NestedMap(mc.Object, "spec", "config")
+	// Extract spec.config (the ignition config portion).
+	specConfig, found, err := unstructured.NestedMap(mc.Object, "spec", "config")
 	if err != nil || !found {
 		return nil, fmt.Errorf("rendered MachineConfig %s has no spec.config", renderedName)
 	}
 
-	// Marshal the ignition config to JSON.
-	data, err := json.Marshal(config)
+	// Marshal the full MachineConfig for embedding.
+	mcJSON, err := json.Marshal(mc.Object)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal ignition config: %w", err)
+		return nil, fmt.Errorf("failed to marshal MachineConfig: %w", err)
 	}
 
-	if len(data) == 0 {
-		return nil, fmt.Errorf("rendered MachineConfig produced empty ignition config")
+	// Build the bootstrap ignition config that wraps the MachineConfig.
+	// This replicates what the MCS serves: the base ignition config from
+	// spec.config, plus two extra files that trigger the MCD first-boot flow.
+	ignition := specConfig
+
+	// Ensure storage.files exists.
+	storage, _ := ignition["storage"].(map[string]interface{})
+	if storage == nil {
+		storage = map[string]interface{}{}
+		ignition["storage"] = storage
+	}
+
+	files, _ := storage["files"].([]interface{})
+
+	// Add /etc/ignition-machine-config-encapsulated.json — the trigger
+	// file that tells the MCD to run first-boot processing.
+	files = append(files, map[string]interface{}{
+		"path":      "/etc/ignition-machine-config-encapsulated.json",
+		"mode":      0o420,
+		"overwrite": true,
+		"contents": map[string]interface{}{
+			"source": "data:," + url.PathEscape("{}"),
+		},
+	})
+
+	// Add /etc/mcs-machine-config-content.json — the full rendered
+	// MachineConfig that the MCD applies on first boot.
+	files = append(files, map[string]interface{}{
+		"path":      "/etc/mcs-machine-config-content.json",
+		"mode":      0o420,
+		"overwrite": true,
+		"contents": map[string]interface{}{
+			"source": "data:," + url.PathEscape(string(mcJSON)),
+		},
+	})
+
+	storage["files"] = files
+
+	data, err := json.Marshal(ignition)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal bootstrap ignition: %w", err)
 	}
 
 	return data, nil
