@@ -75,6 +75,7 @@ type LibvirtMachineReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -527,7 +528,7 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 func (r *LibvirtMachineReconciler) reconcileDelete(
 	ctx context.Context,
 	libvirtMachine *infrav1.LibvirtMachine,
-	_ *clusterv1.Machine,
+	machine *clusterv1.Machine,
 	cluster *clusterv1.Cluster,
 	libvirtCluster *infrav1.LibvirtCluster,
 	libvirtHost *infrav1.LibvirtHost,
@@ -640,6 +641,16 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 		log.Info("Destroying ephemeral pool and tmpfs", "pool", ephPoolName)
 		if err := libvirtClient.DestroyPool(ctx, ephPoolName); err != nil && !libvirt.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("failed to destroy ephemeral pool: %w", err)
+		}
+	}
+
+	// Delete the Node object from the cluster if it exists.
+	nodeName := machineScope.DomainName()
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err == nil {
+		log.Info("Deleting Node object", "node", nodeName)
+		if err := r.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete Node object (non-fatal)", "node", nodeName)
 		}
 	}
 
