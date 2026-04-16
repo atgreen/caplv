@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -37,6 +38,7 @@ import (
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
 	"github.com/atgreen/caplv/internal/ignition"
+	ignsrv "github.com/atgreen/caplv/internal/ignitionserver"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
 	"github.com/atgreen/caplv/internal/mcs"
@@ -539,10 +541,7 @@ func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Conte
 			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
 		}
 
-		// Write ignition to host filesystem for fw_cfg delivery.
-		// RHCOS reads ignition exclusively from QEMU fw_cfg, not from
-		// disk labels. The fw_cfg read is O(n²) with file size but is
-		// the only supported delivery method for RHCOS.
+		// Write the full ignition config to the host filesystem.
 		log.Info("Writing ignition config to host", "path", rc.ignitionFilePath)
 		bootstrapStart := time.Now()
 		if err := libvirtClient.WriteRemoteFile(ctx, rc.ignitionFilePath, bootstrapData); err != nil {
@@ -550,6 +549,46 @@ func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Conte
 			return r.handleLibvirtError(libvirtMachine, err, "writing ignition file")
 		}
 		log.Info("Wrote ignition config", "path", rc.ignitionFilePath, "size", len(bootstrapData), "duration", time.Since(bootstrapStart).String())
+
+		// Upload the ignition-server binary to the host (cached — skips if exists).
+		serverExists, _ := libvirtClient.RunSSHCommand(ctx, fmt.Sprintf("test -x %s && echo yes || echo no", ignsrv.ServerBinaryPath))
+		if serverExists != "yes" {
+			log.Info("Uploading ignition-server binary to host")
+			serverBin, err := os.ReadFile(ignsrv.LocalBinaryPath)
+			if err != nil {
+				log.Info("ignition-server binary not found in container, falling back to fw_cfg", "error", err)
+			} else {
+				if err := libvirtClient.WriteRemoteFile(ctx, ignsrv.ServerBinaryPath, serverBin); err != nil {
+					log.Info("Failed to upload ignition-server (falling back to fw_cfg)", "error", err)
+				} else {
+					if _, err := libvirtClient.RunSSHCommand(ctx, fmt.Sprintf("sudo chmod +x %s", ignsrv.ServerBinaryPath)); err != nil {
+						log.Info("Failed to chmod ignition-server", "error", err)
+					}
+				}
+			}
+		}
+
+		// Start the ignition HTTP server on the host and create a tiny
+		// fw_cfg pointer. This avoids the O(n²) fw_cfg read for large configs.
+		port := ignsrv.Port(rc.domainName)
+		hostIP := libvirtMachine.Spec.Network.Gateway
+		if hostIP != "" {
+			startCmd := ignsrv.StartCommand(rc.ignitionFilePath, port)
+			if _, err := libvirtClient.RunSSHCommand(ctx, "sudo "+startCmd); err != nil {
+				log.Info("Failed to start ignition-server (falling back to fw_cfg)", "error", err)
+			} else {
+				log.Info("Started ignition HTTP server on host", "port", port, "hostIP", hostIP)
+				pointer, err := ignsrv.PointerIgnition(hostIP, port)
+				if err == nil {
+					// Overwrite the ignition file with the tiny pointer.
+					pointerPath := rc.ignitionFilePath + ".pointer"
+					if err := libvirtClient.WriteRemoteFile(ctx, pointerPath, pointer); err == nil {
+						rc.ignitionFilePath = pointerPath
+						log.Info("Using HTTP ignition delivery", "pointerSize", len(pointer), "fullSize", len(bootstrapData))
+					}
+				}
+			}
+		}
 
 	case infrav1.BootstrapFormatCloudInit:
 		isoExists, err := libvirtClient.VolumeExists(ctx, rc.storagePool, rc.bootstrapISO)
@@ -789,16 +828,20 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 	// Delete bootstrap artifacts.
 	switch libvirtMachine.Spec.BootstrapFormat {
 	case infrav1.BootstrapFormatIgnition:
-		// Delete ignition ISO volume if it exists.
-		ignitionISO := machineScope.ArtifactBaseName() + "-ignition.iso"
-		log.Info("Deleting ignition ISO", "iso", ignitionISO)
-		if err := libvirtClient.DeleteVolume(ctx, storagePool, ignitionISO); err != nil && !libvirt.IsNotFound(err) {
-			log.Error(err, "Failed to delete ignition ISO (non-fatal)", "iso", ignitionISO)
+		// Stop ignition HTTP server if running.
+		port := ignsrv.Port(domainName)
+		stopCmd := ignsrv.StopCommand(port)
+		if _, err := libvirtClient.RunSSHCommand(ctx, stopCmd); err != nil {
+			log.Error(err, "Failed to stop ignition server (non-fatal)")
 		}
-		// Also clean up legacy fw_cfg ignition file if present.
+		// Delete ignition files.
 		ignitionFile := machineScope.IgnitionFilePath()
 		if err := libvirtClient.DeleteRemoteFile(ctx, ignitionFile); err != nil {
-			// Non-fatal: file may not exist if ISO delivery was used.
+			// Non-fatal.
+		}
+		pointerFile := ignitionFile + ".pointer"
+		if err := libvirtClient.DeleteRemoteFile(ctx, pointerFile); err != nil {
+			// Non-fatal.
 		}
 	case infrav1.BootstrapFormatCloudInit:
 		log.Info("Deleting cloud-init ISO", "iso", bootstrapISO)

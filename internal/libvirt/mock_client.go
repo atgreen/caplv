@@ -40,6 +40,7 @@ type MockClient struct {
 	GetVolumePathFn                func(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFileFn              func(ctx context.Context, path string, data []byte) error
 	DeleteRemoteFileFn             func(ctx context.Context, path string) error
+	RunSSHCommandFn                func(ctx context.Context, cmd string) (string, error)
 	CloseFn                        func() error
 }
 
@@ -201,6 +202,14 @@ func (m *MockClient) DeleteRemoteFile(ctx context.Context, path string) error {
 		return m.DeleteRemoteFileFn(ctx, path)
 	}
 	return nil
+}
+
+// RunSSHCommand delegates to RunSSHCommandFn or returns "", nil.
+func (m *MockClient) RunSSHCommand(ctx context.Context, cmd string) (string, error) {
+	if m.RunSSHCommandFn != nil {
+		return m.RunSSHCommandFn(ctx, cmd)
+	}
+	return "", nil
 }
 
 // Close delegates to CloseFn or returns nil.
