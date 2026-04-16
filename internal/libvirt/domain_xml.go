@@ -253,14 +253,21 @@ func buildOS(params DomainXMLParams) domainOS {
 	}
 
 	if params.Firmware == "uefi" {
-		os.Firmware = "efi"
-		os.Loader = &domainLoader{
-			ReadOnly: "yes",
-			Type:     "pflash",
-			Value:    params.FirmwarePath,
-		}
-		if params.NVRAMPath != "" {
-			os.NVRAM = &domainNVRAM{Value: params.NVRAMPath}
+		if params.FirmwarePath != "" {
+			// Explicit loader path: do not set firmware="efi" as it
+			// triggers auto-detection which conflicts with the explicit
+			// loader on newer libvirt versions.
+			os.Loader = &domainLoader{
+				ReadOnly: "yes",
+				Type:     "pflash",
+				Value:    params.FirmwarePath,
+			}
+			if params.NVRAMPath != "" {
+				os.NVRAM = &domainNVRAM{Value: params.NVRAMPath}
+			}
+		} else {
+			// No explicit path: let libvirt auto-detect firmware.
+			os.Firmware = "efi"
 		}
 	}
 
