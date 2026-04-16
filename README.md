@@ -19,15 +19,18 @@ on the device at all.
 ```
 5-Spot: schedule becomes active
   → Creates CAPI Machine + CAPLV LibvirtMachine
-    → CAPLV connects to libvirt host over SSH
-      → Clones RHCOS base image, writes ignition config
-        → Defines and starts KVM domain
-          → VM boots, joins this OpenShift cluster as worker
+    → CAPLV auto-fetches worker ignition from the OpenShift Machine Config Server
+      → Injects hostname + providerID into ignition config
+        → Connects to libvirt host over SSH
+          → Clones RHCOS base image, writes ignition config
+            → Defines and starts KVM domain
+              → VM boots, kubelet starts, CSR auto-approved
+                → Node joins this OpenShift cluster as worker
 
 5-Spot: schedule becomes inactive
   → Deletes CAPI Machine
-    → CAPI drains pods, deletes the Node object
-      → CAPLV destroys domain, cleans up all artifacts
+    → CAPI drains pods
+      → CAPLV destroys domain, cleans up all artifacts, deletes Node object
 ```
 
 CAPLV runs on the same OpenShift cluster that the worker VMs join.
@@ -188,6 +191,65 @@ spec:
       bootstrapFormat: "ignition"
 ```
 
+### Create a worker directly (no bootstrap secret needed)
+
+On OpenShift, CAPLV auto-fetches the worker ignition from the Machine
+Config Server. Just create a Machine + LibvirtMachine:
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtMachine
+metadata:
+  name: worker01
+  namespace: default
+spec:
+  hostRef:
+    name: rhel-host-01
+  domain:
+    vcpus: 4
+    memoryMB: 8192
+  network:
+    type: "bridge"
+    name: "br0"
+    addresses:
+      - "192.168.1.50/24"
+    gateway: "192.168.1.1"
+    dns:
+      nameservers:
+        - "192.168.1.1"
+  rootDisk:
+    baseImage: "rhcos.qcow2"
+    baseImagePool: "default"
+    storagePool: "default"
+    size: "100Gi"
+  bootstrapFormat: "ignition"
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Machine
+metadata:
+  name: worker01
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: my-ocp-cluster
+spec:
+  clusterName: my-ocp-cluster
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtMachine
+    name: worker01
+    namespace: default
+```
+
+CAPLV will automatically:
+1. Fetch worker ignition from the in-cluster MCS
+2. Inject hostname (`default-my-ocp-cluster-worker01`) and providerID
+3. Provision the VM on the libvirt host
+4. Auto-approve the kubelet CSR
+5. The node joins the cluster as a worker
+
+To delete, just `kubectl delete machine worker01` — CAPLV destroys the
+VM, cleans up storage, and removes the Node object.
+
 ### Ephemeral storage with tmpfs
 
 VMs are ephemeral — created and destroyed on demand by 5-Spot schedules.
@@ -273,14 +335,22 @@ Node objects in the cluster.
 - **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
   mount and libvirt pool on demand, destroys both on cleanup. No host setup
   required, no persistent storage touched, RAM reclaimed when the VM goes away.
-- **Bootstrap with metadata injection** — CAPLV injects the machine hostname
-  and providerID into ignition configs before writing them to the host. The
-  hostname is set via `/etc/hostname` (using the domain name
-  `<namespace>-<cluster>-<machine>`) and the providerID is set via a kubelet
-  systemd drop-in. This enables the built-in CSR approver to correlate nodes
-  with CAPI Machines. For ignition (OpenShift/RHCOS), the config is delivered
-  via QEMU `fw_cfg` — the standard libvirt method, no ISO needed. For
-  cloud-init, a NoCloud ISO is created.
+- **Automatic OpenShift bootstrap** — on OpenShift clusters, CAPLV auto-fetches
+  the worker ignition config from the in-cluster Machine Config Server (MCS).
+  No manual ignition fetch, no bootstrap secrets to create — just create a
+  Machine + LibvirtMachine and CAPLV handles the rest. The ignition version
+  (spec 3.x) is negotiated automatically. For non-OpenShift clusters, a
+  bootstrap secret can be provided manually.
+- **Metadata injection** — CAPLV injects the machine hostname and providerID
+  into ignition configs before writing them to the host. The hostname is set
+  via `/etc/hostname` (using the domain name `<namespace>-<cluster>-<machine>`)
+  and the providerID is set via a kubelet systemd drop-in. For ignition
+  (OpenShift/RHCOS), the config is delivered via QEMU `fw_cfg` — the standard
+  libvirt method, no ISO needed. For cloud-init, a NoCloud ISO is created.
+- **Built-in CSR approver** — CAPLV includes a CSR approver controller that
+  auto-approves kubelet CSRs (both bootstrap and serving) for nodes whose
+  hostname matches a CAPI Machine backed by a LibvirtMachine. No external
+  machine-approver integration required.
 - **Deterministic artifact naming** — domain names, disk volumes, and ISOs are
   named `<namespace>-<cluster>-<machine>`. Artifacts can be rediscovered after a
   controller crash without relying on status writes.
@@ -430,6 +500,7 @@ internal/
   ignition/            Ignition config manipulation (hostname and providerID injection)
   libvirt/             Client interface, virsh-over-SSH, domain XML generation
   iso/                 Cloud-init NoCloud ISO creation (pure Go, go-diskfs)
+  mcs/                 OpenShift Machine Config Server client (auto-fetch worker ignition)
   ssh/                 SSH client with host key verification
   scope/               MachineScope — gathers reconciliation context, artifact naming
   webhook/             Admission webhook (immutable spec, required static IP, one VM per host)
