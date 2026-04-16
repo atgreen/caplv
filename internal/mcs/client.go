@@ -96,19 +96,20 @@ func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, 
 
 	files, _ := storage["files"].([]interface{})
 
-	// Add /etc/ignition-machine-config-encapsulated.json — the trigger
-	// file that tells the MCD to run first-boot processing.
+	// Add /etc/ignition-machine-config-encapsulated.json — contains the
+	// full MachineConfig. The MCD and other first-boot services (like
+	// rhcos-fips) read this to determine configuration.
 	files = append(files, map[string]interface{}{
 		"path":      "/etc/ignition-machine-config-encapsulated.json",
 		"mode":      0o420,
 		"overwrite": true,
 		"contents": map[string]interface{}{
-			"source": "data:," + url.PathEscape("{}"),
+			"source": "data:," + url.PathEscape(string(mcJSON)),
 		},
 	})
 
-	// Add /etc/mcs-machine-config-content.json — the full rendered
-	// MachineConfig that the MCD applies on first boot.
+	// Add /etc/mcs-machine-config-content.json — duplicate of the above,
+	// used by the MCD pull service as an alternative source.
 	files = append(files, map[string]interface{}{
 		"path":      "/etc/mcs-machine-config-content.json",
 		"mode":      0o420,
