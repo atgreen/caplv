@@ -476,19 +476,6 @@ func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
 	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", path))
 }
 
-// RunSSHCommand runs an arbitrary command on the remote host and returns stdout.
-func (c *VirshClient) RunSSHCommand(ctx context.Context, cmd string) (string, error) {
-	session, err := c.sshClient.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("ssh session: %w", err)
-	}
-	defer func() { _ = session.Close() }()
-	out, err := session.CombinedOutput(cmd)
-	if err != nil {
-		return string(out), fmt.Errorf("ssh command %q: %s: %w", cmd, string(out), err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 // Close closes the underlying SSH connection.
 func (c *VirshClient) Close() error {

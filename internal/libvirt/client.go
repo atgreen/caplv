@@ -53,6 +53,5 @@ type Client interface {
 	GetVolumePath(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFile(ctx context.Context, path string, data []byte) error
 	DeleteRemoteFile(ctx context.Context, path string) error
-	RunSSHCommand(ctx context.Context, cmd string) (string, error)
 	Close() error
 }
