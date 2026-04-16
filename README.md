@@ -3,7 +3,7 @@
 CAPLV is an *EXPERIMENTAL* [Cluster API](https://cluster-api.sigs.k8s.io/)
 infrastructure provider that provisions KVM virtual machines on libvirt
 hosts. It is built exclusively for
-[5-Spot](https://github.com/RBC/5-spot), which schedules OpenShift worker
+[5-Spot](https://github.com/finos/5-spot), which schedules OpenShift worker
 nodes on and off physical RHEL/KVM infrastructure based on time-of-day
 rules.
 
@@ -49,7 +49,7 @@ needs these one-time prerequisites:
 **2. Create a CAPI Cluster resource** pointing to itself:
 
 ```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: my-ocp-cluster
@@ -105,8 +105,8 @@ reports available resources (total minus reserved) in
 **5. Create a service account on each host** with minimal privileges:
 
 ```bash
-# Create the caplv user with libvirt group membership (no login shell).
-useradd -r -s /sbin/nologin -G libvirt caplv
+# Create the caplv user with libvirt group membership.
+useradd -r -s /bin/bash -G libvirt caplv
 mkdir -p /home/caplv/.ssh
 # Deploy the SSH public key matching the Kubernetes Secret.
 cat > /home/caplv/.ssh/authorized_keys <<< "<public-key>"
@@ -132,7 +132,10 @@ The `libvirt` group grants access to `virsh` commands against
 under `/run/caplv/` require elevated privileges.
 
 **6. Pre-stage RHCOS base images** on each libvirt host in the persistent
-storage pool (e.g., `/var/lib/libvirt/images/rhcos-4.14.qcow2`).
+storage pool (e.g., `/var/lib/libvirt/images/rhcos.qcow2`). The RHCOS
+version should match the OpenShift cluster version (e.g., use the 4.21
+image for an OCP 4.21 cluster). Download from
+`https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/<version>/latest/`.
 
 **7. Deploy a MachineHealthCheck** (recommended — see below).
 
@@ -171,7 +174,7 @@ spec:
         size: "100Gi"
         storagePool: "vm-disks"
         baseImagePool: "default"
-        baseImage: "rhcos-4.14.qcow2"
+        baseImage: "rhcos.qcow2"
         ephemeralPool: true
       network:
         type: "bridge"
@@ -195,7 +198,7 @@ set `ephemeralPool: true`:
 rootDisk:
   storagePool: "vm-disks"        # CAPLV creates this as tmpfs on demand
   baseImagePool: "default"       # persistent pool with pre-staged base image
-  baseImage: "rhcos-4.14.qcow2"
+  baseImage: "rhcos.qcow2"
   ephemeralPool: true
 ```
 
@@ -216,7 +219,7 @@ indefinitely. A CAPI `MachineHealthCheck` detects this and triggers
 remediation — deleting the orphaned Machine and its stale Node.
 
 ```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: MachineHealthCheck
 metadata:
   name: caplv-worker-health
@@ -270,10 +273,14 @@ Node objects in the cluster.
 - **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
   mount and libvirt pool on demand, destroys both on cleanup. No host setup
   required, no persistent storage touched, RAM reclaimed when the VM goes away.
-- **Bootstrap pass-through** — CAPLV does not modify ignition or cloud-init data.
-  Network configuration is the bootstrap provider's responsibility. For ignition
-  (OpenShift/RHCOS), the config is delivered via QEMU `fw_cfg` — the standard
-  libvirt method, no ISO needed. For cloud-init, a NoCloud ISO is created.
+- **Bootstrap with metadata injection** — CAPLV injects the machine hostname
+  and providerID into ignition configs before writing them to the host. The
+  hostname is set via `/etc/hostname` (using the domain name
+  `<namespace>-<cluster>-<machine>`) and the providerID is set via a kubelet
+  systemd drop-in. This enables the built-in CSR approver to correlate nodes
+  with CAPI Machines. For ignition (OpenShift/RHCOS), the config is delivered
+  via QEMU `fw_cfg` — the standard libvirt method, no ISO needed. For
+  cloud-init, a NoCloud ISO is created.
 - **Deterministic artifact naming** — domain names, disk volumes, and ISOs are
   named `<namespace>-<cluster>-<machine>`. Artifacts can be rediscovered after a
   controller crash without relying on status writes.
@@ -308,7 +315,7 @@ account cannot escalate beyond these specific commands.
 
 ```
 /var/lib/libvirt/images/                    (persistent pool "default")
-  └── rhcos-4.14.qcow2                     ← pre-staged by operator (read-only)
+  └── rhcos.qcow2                     ← pre-staged by operator (read-only)
 
 /run/caplv/ns-cluster-worker01/             (tmpfs, CAPLV creates/destroys)
   ├── ns-cluster-worker01-root.qcow2       ← CoW overlay (in RAM)
@@ -361,7 +368,7 @@ affect CAPLV's ability to operate.
 | **API reachable internally but not from worker endpoint** | CAPLV can reconcile, but the LibvirtCluster TCP dial against the external endpoint fails. Status goes `ready=false` with condition `ControlPlaneUnreachable`. CAPI blocks new machine creation. Already-running VMs are unaffected. | External endpoint restored, LibvirtCluster rechecks every 60s. |
 | **Cluster under resource pressure** | CAPLV pods may be evicted or throttled. Reconciliation slows. If 5-Spot activates a large schedule during a stressed period, hundreds of concurrent reconciles add API server and etcd load. | CAPLV pods restart via Deployment. Consider PodDisruptionBudget and resource requests to keep CAPLV running during pressure. |
 | **etcd degradation** | Status patches and Machine updates slow down. All concurrent reconciles compete for etcd bandwidth. | etcd recovers, backlogged reconciles drain. |
-| **Machine approver is down** | VMs boot and request CSRs, but certificates are never approved. Nodes stay `NotReady`. | Operator restores the machine approver. Pending CSRs are approved and nodes join. |
+| **CAPLV CSR approver not running** | VMs boot and request CSRs, but certificates are never approved. Nodes stay `NotReady`. CAPLV includes a built-in CSR approver that auto-approves CSRs from nodes matching a CAPI Machine backed by a LibvirtMachine. | Restart the CAPLV controller. Pending CSRs are approved and nodes join. |
 
 ### Storage failures (with ephemeralPool)
 
@@ -419,7 +426,8 @@ make deploy IMG=ghcr.io/atgreen/caplv:latest
 ```
 api/v1alpha1/          CRD type definitions (LibvirtHost, LibvirtCluster, LibvirtMachine)
 internal/
-  controller/          Reconcilers for all three CRDs (50 concurrent machine workers)
+  controller/          Reconcilers for all three CRDs + CSR approver (50 concurrent machine workers)
+  ignition/            Ignition config manipulation (hostname and providerID injection)
   libvirt/             Client interface, virsh-over-SSH, domain XML generation
   iso/                 Cloud-init NoCloud ISO creation (pure Go, go-diskfs)
   ssh/                 SSH client with host key verification
