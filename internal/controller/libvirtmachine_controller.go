@@ -539,33 +539,17 @@ func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Conte
 			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
 		}
 
-		// Build an ISO containing the ignition config and upload it as a
-		// libvirt volume. This avoids the slow fw_cfg delivery path where
-		// ignition reads the config byte-by-byte through a QEMU I/O port
-		// (O(n²) with file size). The ISO is attached as a cdrom and
-		// ignition reads it via /dev/disk/by-label/ignition.
-		ignitionISO := rc.machineScope.ArtifactBaseName() + "-ignition.iso"
-		isoExists, err := libvirtClient.VolumeExists(ctx, rc.storagePool, ignitionISO)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "checking ignition ISO")
+		// Write ignition to host filesystem for fw_cfg delivery.
+		// RHCOS reads ignition exclusively from QEMU fw_cfg, not from
+		// disk labels. The fw_cfg read is O(n²) with file size but is
+		// the only supported delivery method for RHCOS.
+		log.Info("Writing ignition config to host", "path", rc.ignitionFilePath)
+		bootstrapStart := time.Now()
+		if err := libvirtClient.WriteRemoteFile(ctx, rc.ignitionFilePath, bootstrapData); err != nil {
+			log.Error(err, "Failed to write ignition file", "path", rc.ignitionFilePath)
+			return r.handleLibvirtError(libvirtMachine, err, "writing ignition file")
 		}
-		if !isoExists {
-			log.Info("Creating ignition ISO", "iso", ignitionISO, "ignitionSize", len(bootstrapData))
-			bootstrapStart := time.Now()
-			isoData, err := r.ISOBuilder.BuildIgnitionISO(bootstrapData)
-			if err != nil {
-				log.Error(err, "Terminal error", "operation", "building ignition ISO", "reason", infrav1.ReasonInvalidBootstrapData)
-				r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
-					fmt.Sprintf("failed to build ignition ISO: %v", err))
-				return nil
-			}
-			if err := libvirtClient.UploadVolumeFromBytes(ctx, rc.storagePool, ignitionISO, isoData); err != nil {
-				log.Error(err, "Failed to upload ignition ISO", "iso", ignitionISO)
-				return r.handleLibvirtError(libvirtMachine, err, "uploading ignition ISO")
-			}
-			log.Info("Created ignition ISO", "iso", ignitionISO, "isoSize", len(isoData), "duration", time.Since(bootstrapStart).String())
-		}
-		rc.ignitionISO = ignitionISO
+		log.Info("Wrote ignition config", "path", rc.ignitionFilePath, "size", len(bootstrapData), "duration", time.Since(bootstrapStart).String())
 
 	case infrav1.BootstrapFormatCloudInit:
 		isoExists, err := libvirtClient.VolumeExists(ctx, rc.storagePool, rc.bootstrapISO)
@@ -669,18 +653,7 @@ func (r *LibvirtMachineReconciler) reconcileDomain(ctx context.Context, rc *reco
 
 		switch libvirtMachine.Spec.BootstrapFormat {
 		case infrav1.BootstrapFormatIgnition:
-			// Deliver ignition via ISO (cdrom) instead of fw_cfg to avoid
-			// the O(n²) read performance issue with large configs.
-			if rc.ignitionISO != "" {
-				isoPath, err := libvirtClient.GetVolumePath(ctx, rc.storagePool, rc.ignitionISO)
-				if err != nil {
-					return nil, r.handleLibvirtError(libvirtMachine, err, "getting ignition ISO path")
-				}
-				xmlParams.BootstrapISOPath = isoPath
-			} else {
-				// Fallback to fw_cfg if ISO was not created.
-				xmlParams.IgnitionPath = rc.ignitionFilePath
-			}
+			xmlParams.IgnitionPath = rc.ignitionFilePath
 		case infrav1.BootstrapFormatCloudInit:
 			isoPath, err := libvirtClient.GetVolumePath(ctx, rc.storagePool, rc.bootstrapISO)
 			if err != nil {
