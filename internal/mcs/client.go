@@ -27,25 +27,51 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	// DefaultMCSEndpoint is the in-cluster Machine Config Server endpoint.
-	// Port 22624 serves ignition configs over HTTP without client certificates.
-	DefaultMCSEndpoint = "http://machine-config-server.openshift-machine-config-operator.svc:22624"
-
 	// ignitionV3Accept is the Accept header to request ignition spec 3.x.
 	ignitionV3Accept = "application/vnd.coreos.ignition+json;version=3.2.0"
+
+	mcsNamespace   = "openshift-machine-config-operator"
+	mcsServiceName = "machine-config-server"
 )
 
 // FetchWorkerIgnition fetches the worker ignition config from the
-// OpenShift Machine Config Server. The MCS runs in-cluster and serves
-// ignition configs for worker nodes.
-//
-// The MCS TLS cert is self-signed, so we skip verification. This is
-// safe because we're connecting to an in-cluster service.
-func FetchWorkerIgnition(ctx context.Context) ([]byte, error) {
-	return FetchIgnition(ctx, DefaultMCSEndpoint, "worker")
+// OpenShift Machine Config Server. It discovers the MCS endpoint
+// from the Kubernetes Endpoints resource to bypass ClusterIP routing
+// issues on SNO clusters.
+func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, error) {
+	endpoints := &corev1.Endpoints{}
+	key := types.NamespacedName{
+		Namespace: mcsNamespace,
+		Name:      mcsServiceName,
+	}
+	if err := k8sClient.Get(ctx, key, endpoints); err != nil {
+		return nil, fmt.Errorf("failed to get MCS endpoints: %w", err)
+	}
+
+	// Find the MCS pod IP from the endpoints.
+	for _, subset := range endpoints.Subsets {
+		for _, addr := range subset.Addresses {
+			// Try HTTP on port 22624 first (unauthenticated), then HTTPS on 22623.
+			for _, endpoint := range []string{
+				fmt.Sprintf("http://%s:22624", addr.IP),
+				fmt.Sprintf("https://%s:22623", addr.IP),
+			} {
+				data, err := FetchIgnition(ctx, endpoint, "worker")
+				if err == nil {
+					return data, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to fetch ignition from any MCS endpoint")
 }
 
 // FetchIgnition fetches an ignition config for the given role from
@@ -53,7 +79,7 @@ func FetchWorkerIgnition(ctx context.Context) ([]byte, error) {
 func FetchIgnition(ctx context.Context, endpoint, role string) ([]byte, error) {
 	url := fmt.Sprintf("%s/config/%s", endpoint, role)
 
-	client := &http.Client{
+	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -68,7 +94,7 @@ func FetchIgnition(ctx context.Context, endpoint, role string) ([]byte, error) {
 	}
 	req.Header.Set("Accept", ignitionV3Accept)
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch ignition from MCS: %w", err)
 	}
@@ -89,30 +115,4 @@ func FetchIgnition(ctx context.Context, endpoint, role string) ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-// IsAvailable checks whether the MCS is reachable in-cluster.
-func IsAvailable(ctx context.Context) bool {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec
-			},
-		},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, DefaultMCSEndpoint+"/healthz", nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// MCS may return 404 for /healthz but the connection succeeding is enough.
-	return true
 }

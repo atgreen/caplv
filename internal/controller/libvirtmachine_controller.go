@@ -724,7 +724,7 @@ func (r *LibvirtMachineReconciler) autoCreateBootstrapSecret(
 
 	// Fetch worker ignition from MCS.
 	log.Info("Fetching worker ignition from OpenShift MCS")
-	ignitionData, err := mcs.FetchWorkerIgnition(ctx)
+	ignitionData, err := mcs.FetchWorkerIgnition(ctx, r.Client)
 	if err != nil {
 		return fmt.Errorf("failed to fetch from MCS: %w", err)
 	}
