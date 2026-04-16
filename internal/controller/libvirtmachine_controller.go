@@ -39,6 +39,7 @@ import (
 	"github.com/atgreen/caplv/internal/ignition"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
+	"github.com/atgreen/caplv/internal/mcs"
 	"github.com/atgreen/caplv/internal/scope"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
@@ -73,7 +74,8 @@ type LibvirtMachineReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtmachines/finalizers,verbs=update
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirthosts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtclusters,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=create
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -200,8 +202,31 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		vc.WithLogger(log)
 	}
 
-	// Check bootstrap data readiness.
+	// Check bootstrap data readiness. If no bootstrap secret is referenced
+	// and the bootstrap format is ignition, attempt to auto-fetch the worker
+	// ignition config from the in-cluster OpenShift Machine Config Server.
 	if machine.Spec.Bootstrap.DataSecretName == nil {
+		if libvirtMachine.Spec.BootstrapFormat == infrav1.BootstrapFormatIgnition {
+			secretName, err := r.autoCreateBootstrapSecret(ctx, machine, libvirtMachine)
+			if err != nil {
+				log.Info("Auto-bootstrap from MCS not available, waiting for manual bootstrap data", "error", err)
+				apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+					Type:               infrav1.BootstrapDataReadyCondition,
+					Status:             metav1.ConditionFalse,
+					Reason:             infrav1.ReasonBootstrapDataNotReady,
+					Message:            "Waiting for bootstrap data secret (MCS auto-fetch failed: " + err.Error() + ")",
+					ObservedGeneration: libvirtMachine.Generation,
+				})
+				return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+			}
+			log.Info("Auto-created bootstrap secret from OpenShift MCS", "secret", secretName)
+			machine.Spec.Bootstrap.DataSecretName = &secretName
+			if err := r.Update(ctx, machine); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to update Machine with bootstrap secret name: %w", err)
+			}
+			// Requeue to continue with the bootstrap data now available.
+			return ctrl.Result{Requeue: true}, nil
+		}
 		log.Info("Bootstrap data not yet available, requeueing")
 		apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
 			Type:               infrav1.BootstrapDataReadyCondition,
@@ -658,6 +683,58 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 	controllerutil.RemoveFinalizer(libvirtMachine, infrav1.MachineFinalizer)
 
 	return ctrl.Result{}, nil
+}
+
+// autoCreateBootstrapSecret fetches worker ignition from the in-cluster
+// OpenShift Machine Config Server and creates a bootstrap data secret.
+// This allows users to create Machine + LibvirtMachine resources without
+// manually fetching and creating the ignition secret.
+func (r *LibvirtMachineReconciler) autoCreateBootstrapSecret(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+	libvirtMachine *infrav1.LibvirtMachine,
+) (string, error) {
+	log := logf.FromContext(ctx)
+
+	// Fetch worker ignition from MCS.
+	log.Info("Fetching worker ignition from OpenShift MCS")
+	ignitionData, err := mcs.FetchWorkerIgnition(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch from MCS: %w", err)
+	}
+	log.Info("Fetched worker ignition from MCS", "size", len(ignitionData))
+
+	// Create the bootstrap secret.
+	secretName := machine.Name + "-bootstrap"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: machine.Namespace,
+			Labels: map[string]string{
+				"cluster.x-k8s.io/cluster-name": machine.Spec.ClusterName,
+				"caplv.io/auto-created":         "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: machine.APIVersion,
+					Kind:       machine.Kind,
+					Name:       machine.Name,
+					UID:        machine.UID,
+				},
+			},
+		},
+		Data: map[string][]byte{
+			"value":  ignitionData,
+			"format": []byte("ignition"),
+		},
+	}
+
+	if err := r.Create(ctx, secret); err != nil {
+		return "", fmt.Errorf("failed to create bootstrap secret: %w", err)
+	}
+
+	log.Info("Created bootstrap secret from MCS", "secret", secretName)
+	return secretName, nil
 }
 
 // createClients creates SSH and libvirt clients for the given host.
