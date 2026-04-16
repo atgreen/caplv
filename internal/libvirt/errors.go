@@ -74,6 +74,7 @@ func ClassifyVirshError(stderr, op, resource string) *LibvirtError {
 	switch {
 	case strings.Contains(lower, "not found"),
 		strings.Contains(lower, "no domain"),
+		strings.Contains(lower, "failed to get domain"),
 		strings.Contains(lower, "no storage vol"),
 		strings.Contains(lower, "storage volume not found"):
 		category = ErrorNotFound
