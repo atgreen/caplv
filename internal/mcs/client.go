@@ -31,7 +31,8 @@ import (
 
 const (
 	// DefaultMCSEndpoint is the in-cluster Machine Config Server endpoint.
-	DefaultMCSEndpoint = "https://machine-config-server.openshift-machine-config-operator.svc:22623"
+	// Port 22624 serves ignition configs over HTTP without client certificates.
+	DefaultMCSEndpoint = "http://machine-config-server.openshift-machine-config-operator.svc:22624"
 
 	// ignitionV3Accept is the Accept header to request ignition spec 3.x.
 	ignitionV3Accept = "application/vnd.coreos.ignition+json;version=3.2.0"
