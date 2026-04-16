@@ -24,7 +24,6 @@ rules:
   resources:
   - secrets
   verbs:
-  - create
   - get
   - list
   - watch
@@ -56,20 +55,11 @@ rules:
   resources:
   - clusters
   - clusters/status
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cluster.x-k8s.io
-  resources:
   - machines
   - machines/status
   verbs:
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
@@ -103,12 +93,3 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - machineconfiguration.openshift.io
-  resources:
-  - machineconfigpools
-  - machineconfigs
-  verbs:
-  - get
-  - list
-  - watch
