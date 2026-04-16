@@ -103,3 +103,62 @@ func TestInjectHostnameReplacesExisting(t *testing.T) {
 		t.Errorf("expected exactly 1 /etc/hostname entry, got %d", count)
 	}
 }
+
+func TestInjectMachineMetadata(t *testing.T) {
+	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	result, err := InjectMachineMetadata([]byte(input), "my-worker", "libvirt:///laptop/my-worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal(result, &config); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+
+	paths := make(map[string]bool)
+	for _, f := range files {
+		fm := f.(map[string]interface{})
+		paths[fm["path"].(string)] = true
+	}
+
+	if !paths["/etc/hostname"] {
+		t.Error("expected /etc/hostname file")
+	}
+	if !paths["/etc/systemd/system/kubelet.service.d/90-provider-id.conf"] {
+		t.Error("expected kubelet provider-id drop-in")
+	}
+	if !paths["/etc/kubernetes/caplv-provider-id"] {
+		t.Error("expected caplv-provider-id file")
+	}
+}
+
+func TestInjectMachineMetadataProviderIDContent(t *testing.T) {
+	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	result, err := InjectMachineMetadata([]byte(input), "", "libvirt:///host/domain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var config map[string]interface{}
+	json.Unmarshal(result, &config)
+
+	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	for _, f := range files {
+		fm := f.(map[string]interface{})
+		if fm["path"] == "/etc/systemd/system/kubelet.service.d/90-provider-id.conf" {
+			contents := fm["contents"].(map[string]interface{})
+			source := contents["source"].(string)
+			if !strings.Contains(source, "provider-id") {
+				t.Errorf("drop-in source = %q, want to contain 'provider-id'", source)
+			}
+			if !strings.Contains(source, "libvirt") {
+				t.Errorf("drop-in source = %q, want to contain 'libvirt'", source)
+			}
+			return
+		}
+	}
+	t.Error("provider-id drop-in not found")
+}

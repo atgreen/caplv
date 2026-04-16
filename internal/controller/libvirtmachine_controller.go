@@ -332,15 +332,17 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 	switch libvirtMachine.Spec.BootstrapFormat {
 	case infrav1.BootstrapFormatIgnition:
-		// Inject hostname into ignition config so the node registers
-		// with a predictable name that matches the CAPI Machine.
+		// Inject hostname and providerID into ignition config so the
+		// node registers with a predictable name and providerID that
+		// the machine-approver can correlate with the CAPI Machine.
 		hostname := machineScope.DomainName()
-		injected, err := ignition.InjectHostname(bootstrapData, hostname)
+		providerID := machineScope.ProviderID()
+		injected, err := ignition.InjectMachineMetadata(bootstrapData, hostname, providerID)
 		if err != nil {
-			log.Info("Could not inject hostname into ignition (using original)", "error", err)
+			log.Info("Could not inject machine metadata into ignition (using original)", "error", err)
 		} else {
 			bootstrapData = injected
-			log.Info("Injected hostname into ignition config", "hostname", hostname)
+			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
 		}
 
 		// Write ignition JSON to host filesystem for fw_cfg delivery.
