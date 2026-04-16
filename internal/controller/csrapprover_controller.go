@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"strings"
 
 	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -136,14 +139,32 @@ func (r *CSRApproverReconciler) isLibvirtManagedNode(ctx context.Context, nodeNa
 	return false
 }
 
-// nodeNameFromCSR extracts the node name from a CSR's username or common name.
-// Kubelet client CSRs use username "system:node:<nodename>".
-// Kubelet serving CSRs use username "system:node:<nodename>".
+// nodeNameFromCSR extracts the node name from a CSR.
+// It checks the username first (kubelet serving/renewal CSRs use
+// "system:node:<nodename>"), then falls back to parsing the CN from
+// the CSR request (bootstrap CSRs use the node-bootstrapper SA as
+// the username but set CN=system:node:<nodename> in the request).
 func nodeNameFromCSR(csr *certificatesv1.CertificateSigningRequest) string {
 	const prefix = "system:node:"
-	if len(csr.Spec.Username) > len(prefix) && csr.Spec.Username[:len(prefix)] == prefix {
+
+	// Check username first (serving and renewal CSRs).
+	if strings.HasPrefix(csr.Spec.Username, prefix) {
 		return csr.Spec.Username[len(prefix):]
 	}
+
+	// Fall back to parsing the CSR request CN (bootstrap CSRs).
+	block, _ := pem.Decode(csr.Spec.Request)
+	if block == nil {
+		return ""
+	}
+	req, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	if strings.HasPrefix(req.Subject.CommonName, prefix) {
+		return req.Subject.CommonName[len(prefix):]
+	}
+
 	return ""
 }
 
