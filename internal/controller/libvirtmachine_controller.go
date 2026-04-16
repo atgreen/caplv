@@ -202,31 +202,11 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		vc.WithLogger(log)
 	}
 
-	// Check bootstrap data readiness. If no bootstrap secret is referenced
-	// and the bootstrap format is ignition, attempt to auto-fetch the worker
-	// ignition config from the in-cluster OpenShift Machine Config Server.
+	// Check bootstrap data readiness. If the bootstrap secret doesn't exist
+	// yet and the bootstrap format is ignition, attempt to auto-fetch the
+	// worker ignition config from the in-cluster OpenShift Machine Config
+	// Server.
 	if machine.Spec.Bootstrap.DataSecretName == nil {
-		if libvirtMachine.Spec.BootstrapFormat == infrav1.BootstrapFormatIgnition {
-			secretName, err := r.autoCreateBootstrapSecret(ctx, machine, libvirtMachine)
-			if err != nil {
-				log.Info("Auto-bootstrap from MCS not available, waiting for manual bootstrap data", "error", err)
-				apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
-					Type:               infrav1.BootstrapDataReadyCondition,
-					Status:             metav1.ConditionFalse,
-					Reason:             infrav1.ReasonBootstrapDataNotReady,
-					Message:            "Waiting for bootstrap data secret (MCS auto-fetch failed: " + err.Error() + ")",
-					ObservedGeneration: libvirtMachine.Generation,
-				})
-				return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
-			}
-			log.Info("Auto-created bootstrap secret from OpenShift MCS", "secret", secretName)
-			machine.Spec.Bootstrap.DataSecretName = &secretName
-			if err := r.Update(ctx, machine); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to update Machine with bootstrap secret name: %w", err)
-			}
-			// Requeue to continue with the bootstrap data now available.
-			return ctrl.Result{Requeue: true}, nil
-		}
 		log.Info("Bootstrap data not yet available, requeueing")
 		apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
 			Type:               infrav1.BootstrapDataReadyCondition,
@@ -236,6 +216,52 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 			ObservedGeneration: libvirtMachine.Generation,
 		})
 		return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+	}
+
+	// Check if the referenced bootstrap secret exists. If not, and the
+	// bootstrap format is ignition, auto-create it from the MCS.
+	bootstrapSecretExists := true
+	{
+		secret := &corev1.Secret{}
+		key := types.NamespacedName{
+			Namespace: machine.Namespace,
+			Name:      *machine.Spec.Bootstrap.DataSecretName,
+		}
+		if err := r.Get(ctx, key, secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				bootstrapSecretExists = false
+			} else {
+				return ctrl.Result{}, fmt.Errorf("failed to check bootstrap secret: %w", err)
+			}
+		}
+	}
+
+	if !bootstrapSecretExists {
+		if libvirtMachine.Spec.BootstrapFormat == infrav1.BootstrapFormatIgnition {
+			secretName := *machine.Spec.Bootstrap.DataSecretName
+			if err := r.autoCreateBootstrapSecret(ctx, machine, secretName); err != nil {
+				log.Info("Auto-bootstrap from MCS not available, waiting for manual secret creation", "error", err)
+				apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+					Type:               infrav1.BootstrapDataReadyCondition,
+					Status:             metav1.ConditionFalse,
+					Reason:             infrav1.ReasonBootstrapDataNotReady,
+					Message:            "Bootstrap secret not found (MCS auto-fetch failed: " + err.Error() + ")",
+					ObservedGeneration: libvirtMachine.Generation,
+				})
+				return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+			}
+			log.Info("Auto-created bootstrap secret from OpenShift MCS", "secret", secretName)
+		} else {
+			log.Info("Bootstrap secret not found, requeueing", "secret", *machine.Spec.Bootstrap.DataSecretName)
+			apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+				Type:               infrav1.BootstrapDataReadyCondition,
+				Status:             metav1.ConditionFalse,
+				Reason:             infrav1.ReasonBootstrapDataNotReady,
+				Message:            "Waiting for bootstrap data secret",
+				ObservedGeneration: libvirtMachine.Generation,
+			})
+			return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+		}
 	}
 
 	// Build MachineScope.
@@ -692,20 +718,19 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 func (r *LibvirtMachineReconciler) autoCreateBootstrapSecret(
 	ctx context.Context,
 	machine *clusterv1.Machine,
-	libvirtMachine *infrav1.LibvirtMachine,
-) (string, error) {
+	secretName string,
+) error {
 	log := logf.FromContext(ctx)
 
 	// Fetch worker ignition from MCS.
 	log.Info("Fetching worker ignition from OpenShift MCS")
 	ignitionData, err := mcs.FetchWorkerIgnition(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch from MCS: %w", err)
+		return fmt.Errorf("failed to fetch from MCS: %w", err)
 	}
 	log.Info("Fetched worker ignition from MCS", "size", len(ignitionData))
 
 	// Create the bootstrap secret.
-	secretName := machine.Name + "-bootstrap"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -730,11 +755,11 @@ func (r *LibvirtMachineReconciler) autoCreateBootstrapSecret(
 	}
 
 	if err := r.Create(ctx, secret); err != nil {
-		return "", fmt.Errorf("failed to create bootstrap secret: %w", err)
+		return fmt.Errorf("failed to create bootstrap secret: %w", err)
 	}
 
 	log.Info("Created bootstrap secret from MCS", "secret", secretName)
-	return secretName, nil
+	return nil
 }
 
 // createClients creates SSH and libvirt clients for the given host.
