@@ -173,12 +173,12 @@ func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *in
 		return
 	}
 	if sshClient != nil {
-		defer sshClient.Close()
+		defer func() { _ = sshClient.Close() }()
 	}
 
 	// Verify libvirt is usable.
 	libvirtClient := r.LibvirtClientFactory(sshClient)
-	defer libvirtClient.Close()
+	defer func() { _ = libvirtClient.Close() }()
 
 	if err := libvirtClient.Ping(ctx); err != nil {
 		log.Error(err, "Libvirt connectivity check failed")

@@ -36,9 +36,9 @@ func (b *DiskfsBuilder) BuildCloudInitISO(userData []byte, instanceID, hostname 
 		return nil, fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	os.Remove(tmpPath) // Remove so diskfs.Create can use O_EXCL
-	defer os.Remove(tmpPath)
+	_ = tmpFile.Close()
+	_ = os.Remove(tmpPath) // Remove so diskfs.Create can use O_EXCL
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Calculate disk size: data + metadata + overhead, rounded up to block boundary, minimum 2MB.
 	diskSize := max(int64(len(userData))+int64(len(metaData))+isoOverheadBytes, minISOSize)

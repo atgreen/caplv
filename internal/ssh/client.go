@@ -69,7 +69,7 @@ func NewSSHClient(ctx context.Context, host *infrav1.LibvirtHost, secret *corev1
 
 	sshConn, chans, reqs, err := gossh.NewClientConn(conn, addr, config)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("SSH handshake with %s: %w", addr, err)
 	}
 

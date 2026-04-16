@@ -113,7 +113,7 @@ func (r *LibvirtClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		})
 		return ctrl.Result{RequeueAfter: clusterRequeueInterval}, nil
 	}
-	conn.Close()
+	_ = conn.Close()
 	log.Info("Control plane endpoint reachable", "address", addr)
 
 	// Control plane is reachable.

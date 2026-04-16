@@ -73,7 +73,7 @@ func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
@@ -111,7 +111,7 @@ func (c *VirshClient) runSSH(ctx context.Context, cmd string) error {
 	if err != nil {
 		return fmt.Errorf("ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	var stderr bytes.Buffer
 	session.Stderr = &stderr
@@ -235,10 +235,10 @@ func (c *VirshClient) DefineDomain(ctx context.Context, xmlDef string) (*DomainI
 	}
 	session.Stdin = strings.NewReader(xmlDef)
 	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
-		session.Close()
+		_ = session.Close()
 		return nil, fmt.Errorf("upload domain XML: %w", err)
 	}
-	session.Close()
+	_ = session.Close()
 
 	// Define the domain.
 	_, err = c.runVirsh(ctx, "define", tmpFile)
@@ -250,7 +250,7 @@ func (c *VirshClient) DefineDomain(ctx context.Context, xmlDef string) (*DomainI
 	cleanSession, _ := c.sshClient.NewSession()
 	if cleanSession != nil {
 		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", tmpFile))
-		cleanSession.Close()
+		_ = cleanSession.Close()
 	}
 
 	return c.GetDomain(ctx, extractDomainNameFromXML(xmlDef))
@@ -406,10 +406,10 @@ func (c *VirshClient) UploadVolumeFromBytes(ctx context.Context, pool, name stri
 	}
 	session.Stdin = bytes.NewReader(data)
 	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
-		session.Close()
+		_ = session.Close()
 		return fmt.Errorf("upload data: %w", err)
 	}
-	session.Close()
+	_ = session.Close()
 
 	// Create raw volume for the ISO.
 	sizeBytes := int64(len(data))
@@ -427,7 +427,7 @@ func (c *VirshClient) UploadVolumeFromBytes(ctx context.Context, pool, name stri
 	cleanSession, _ := c.sshClient.NewSession()
 	if cleanSession != nil {
 		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", tmpFile))
-		cleanSession.Close()
+		_ = cleanSession.Close()
 	}
 
 	return err
@@ -464,10 +464,10 @@ func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []b
 	}
 	session.Stdin = bytes.NewReader(data)
 	if err := session.Run(fmt.Sprintf("sudo tee %s > /dev/null", path)); err != nil {
-		session.Close()
+		_ = session.Close()
 		return fmt.Errorf("write remote file %s: %w", path, err)
 	}
-	session.Close()
+	_ = session.Close()
 	return nil
 }
 

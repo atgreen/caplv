@@ -54,8 +54,10 @@ func TestGenerateDomainXML_UEFIMode(t *testing.T) {
 	if !strings.Contains(xml, "<nvram") {
 		t.Error("UEFI XML should contain <nvram element")
 	}
-	if !strings.Contains(xml, `firmware="efi"`) {
-		t.Error("UEFI XML should contain firmware=\"efi\" attribute")
+	// When an explicit firmware path is provided, firmware="efi" should NOT
+	// be set (it conflicts with the explicit <loader> on newer libvirt).
+	if strings.Contains(xml, `firmware="efi"`) {
+		t.Error("UEFI XML with explicit loader path should not contain firmware=\"efi\" attribute")
 	}
 }
 

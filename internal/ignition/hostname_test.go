@@ -90,7 +90,9 @@ func TestInjectHostnameReplacesExisting(t *testing.T) {
 	}
 
 	var config map[string]interface{}
-	json.Unmarshal(result, &config)
+	if err := json.Unmarshal(result, &config); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
 
 	files := config["storage"].(map[string]interface{})["files"].([]interface{})
 	count := 0
@@ -148,7 +150,9 @@ func TestInjectMachineMetadataProviderIDContent(t *testing.T) {
 	}
 
 	var config map[string]interface{}
-	json.Unmarshal(result, &config)
+	if err := json.Unmarshal(result, &config); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
 
 	files := config["storage"].(map[string]interface{})["files"].([]interface{})
 	for _, f := range files {

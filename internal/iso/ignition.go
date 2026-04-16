@@ -43,9 +43,9 @@ func (b *DiskfsBuilder) BuildIgnitionISO(ignitionData []byte) ([]byte, error) {
 		return nil, fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	os.Remove(tmpPath) // Remove so diskfs.Create can use O_EXCL
-	defer os.Remove(tmpPath)
+	_ = tmpFile.Close()
+	_ = os.Remove(tmpPath) // Remove so diskfs.Create can use O_EXCL
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Calculate disk size: data + overhead, rounded up to block boundary, minimum 2MB.
 	diskSize := max(int64(len(ignitionData))+isoOverheadBytes, minISOSize)

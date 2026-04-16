@@ -161,6 +161,30 @@ func (r *LibvirtMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return r.reconcileNormal(ctx, libvirtMachine, machine, cluster, libvirtCluster, libvirtHost)
 }
 
+// reconcileCtx holds shared state passed between reconcileNormal sub-steps.
+type reconcileCtx struct {
+	libvirtMachine *infrav1.LibvirtMachine
+	machine        *clusterv1.Machine
+	libvirtHost    *infrav1.LibvirtHost
+	machineScope   *scope.MachineScope
+	libvirtClient  libvirt.Client
+
+	// Computed values populated during reconciliation.
+	resolvedVCPUs    int32
+	resolvedMemoryMB int32
+	storagePool      string
+	baseImagePool    string
+	domainName       string
+	rootDiskVolume   string
+	bootstrapISO     string
+	nvramPath        string
+	ignitionFilePath string
+
+	// Populated by reconcileAdditionalDisks.
+	additionalDiskVolumes []string
+	additionalDiskParams  []libvirt.DiskParam
+}
+
 // reconcileNormal handles creating and configuring the libvirt domain.
 func (r *LibvirtMachineReconciler) reconcileNormal(
 	ctx context.Context,
@@ -195,74 +219,17 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create clients: %w", err)
 	}
-	defer sshClient.Close()
-	defer libvirtClient.Close()
+	defer func() { _ = sshClient.Close() }()
+	defer func() { _ = libvirtClient.Close() }()
 
 	// Attach logger to VirshClient if applicable.
 	if vc, ok := libvirtClient.(*libvirt.VirshClient); ok {
 		vc.WithLogger(log)
 	}
 
-	// Check bootstrap data readiness. If the bootstrap secret doesn't exist
-	// yet and the bootstrap format is ignition, attempt to auto-fetch the
-	// worker ignition config from the in-cluster OpenShift Machine Config
-	// Server.
-	if machine.Spec.Bootstrap.DataSecretName == nil {
-		log.Info("Bootstrap data not yet available, requeueing")
-		apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
-			Type:               infrav1.BootstrapDataReadyCondition,
-			Status:             metav1.ConditionFalse,
-			Reason:             infrav1.ReasonBootstrapDataNotReady,
-			Message:            "Waiting for bootstrap data secret",
-			ObservedGeneration: libvirtMachine.Generation,
-		})
-		return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
-	}
-
-	// Check if the referenced bootstrap secret exists. If not, and the
-	// bootstrap format is ignition, auto-create it from the MCS.
-	bootstrapSecretExists := true
-	{
-		secret := &corev1.Secret{}
-		key := types.NamespacedName{
-			Namespace: machine.Namespace,
-			Name:      *machine.Spec.Bootstrap.DataSecretName,
-		}
-		if err := r.Get(ctx, key, secret); err != nil {
-			if apierrors.IsNotFound(err) {
-				bootstrapSecretExists = false
-			} else {
-				return ctrl.Result{}, fmt.Errorf("failed to check bootstrap secret: %w", err)
-			}
-		}
-	}
-
-	if !bootstrapSecretExists {
-		if libvirtMachine.Spec.BootstrapFormat == infrav1.BootstrapFormatIgnition {
-			secretName := *machine.Spec.Bootstrap.DataSecretName
-			if err := r.autoCreateBootstrapSecret(ctx, machine, secretName); err != nil {
-				log.Info("Auto-bootstrap from MCS not available, waiting for manual secret creation", "error", err)
-				apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
-					Type:               infrav1.BootstrapDataReadyCondition,
-					Status:             metav1.ConditionFalse,
-					Reason:             infrav1.ReasonBootstrapDataNotReady,
-					Message:            "Bootstrap secret not found (MCS auto-fetch failed: " + err.Error() + ")",
-					ObservedGeneration: libvirtMachine.Generation,
-				})
-				return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
-			}
-			log.Info("Auto-created bootstrap secret from OpenShift MCS", "secret", secretName)
-		} else {
-			log.Info("Bootstrap secret not found, requeueing", "secret", *machine.Spec.Bootstrap.DataSecretName)
-			apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
-				Type:               infrav1.BootstrapDataReadyCondition,
-				Status:             metav1.ConditionFalse,
-				Reason:             infrav1.ReasonBootstrapDataNotReady,
-				Message:            "Waiting for bootstrap data secret",
-				ObservedGeneration: libvirtMachine.Generation,
-			})
-			return ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
-		}
+	// Ensure bootstrap data is available.
+	if result, err := r.ensureBootstrapData(ctx, libvirtMachine, machine); result != nil {
+		return *result, err
 	}
 
 	// Build MachineScope.
@@ -279,264 +246,58 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	}
 
 	// Resolve auto-sizing: if vcpus or memoryMB are zero, use host capacity.
-	resolvedVCPUs := libvirtMachine.Spec.Domain.VCPUs
-	resolvedMemoryMB := libvirtMachine.Spec.Domain.MemoryMB
-	if resolvedVCPUs == 0 || resolvedMemoryMB == 0 {
-		if libvirtHost.Status.Capacity == nil {
-			log.Info("Host capacity not yet discovered, requeueing")
-			return ctrl.Result{RequeueAfter: hostNotReadyRequeueInterval}, nil
-		}
-		if resolvedVCPUs == 0 {
-			resolvedVCPUs = libvirtHost.Status.Capacity.AvailableVCPUs
-		}
-		if resolvedMemoryMB == 0 {
-			resolvedMemoryMB = libvirtHost.Status.Capacity.AvailableMemoryMB
-		}
-		if resolvedVCPUs <= 0 || resolvedMemoryMB <= 0 {
-			log.Error(fmt.Errorf("insufficient resources: %d vCPUs, %d MB", resolvedVCPUs, resolvedMemoryMB),
-				"Terminal error", "operation", "auto-sizing", "reason", infrav1.ReasonStorageInsufficient)
-			return r.setTerminalError(libvirtMachine, infrav1.ReasonStorageInsufficient,
-				fmt.Sprintf("host %s has insufficient available resources: %d vCPUs, %d MB",
-					libvirtHost.Name, resolvedVCPUs, resolvedMemoryMB))
-		}
-		log.Info("Auto-sized VM from host capacity", "vcpus", resolvedVCPUs, "memoryMB", resolvedMemoryMB)
+	resolvedVCPUs, resolvedMemoryMB, result, err := r.resolveAutoSizing(ctx, libvirtMachine, libvirtHost)
+	if result != nil {
+		return *result, err
 	}
 
-	// Compute artifact names.
-	domainName := machineScope.DomainName()
-	rootDiskVolume := machineScope.RootDiskVolumeName()
-	bootstrapISO := machineScope.BootstrapISOName()
-	nvramPath := machineScope.NVRAMPath()
-
-	// Enrich logger with host and domain context.
-	log = log.WithValues("host", libvirtHost.Name, "domain", domainName)
+	// Compute artifact names and storage pools.
 	storagePool := libvirtMachine.Spec.RootDisk.StoragePool
 	baseImagePool := libvirtMachine.Spec.RootDisk.BaseImagePool
 	if baseImagePool == "" {
 		baseImagePool = storagePool
 	}
 
-	// Step 0: Create ephemeral tmpfs pool if requested and not yet present.
-	if libvirtMachine.Spec.RootDisk.EphemeralPool {
-		ephPoolName := machineScope.EphemeralPoolName()
-		ephPoolPath := machineScope.EphemeralPoolPath()
-		poolExists, err := libvirtClient.PoolExists(ctx, ephPoolName)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool")
-		}
-		if !poolExists {
-			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath)
-			if err := libvirtClient.CreateTmpfsPool(ctx, ephPoolName, ephPoolPath); err != nil {
-				log.Error(err, "Failed to create ephemeral tmpfs pool", "pool", ephPoolName)
-				return r.handleLibvirtError(libvirtMachine, err, "creating ephemeral pool")
-			}
-			log.Info("Created ephemeral tmpfs pool", "pool", ephPoolName)
-		}
-		// Override storagePool to use the ephemeral pool for all VM artifacts.
-		storagePool = ephPoolName
+	rc := &reconcileCtx{
+		libvirtMachine:   libvirtMachine,
+		machine:          machine,
+		libvirtHost:      libvirtHost,
+		machineScope:     machineScope,
+		libvirtClient:    libvirtClient,
+		resolvedVCPUs:    resolvedVCPUs,
+		resolvedMemoryMB: resolvedMemoryMB,
+		storagePool:      storagePool,
+		baseImagePool:    baseImagePool,
+		domainName:       machineScope.DomainName(),
+		rootDiskVolume:   machineScope.RootDiskVolumeName(),
+		bootstrapISO:     machineScope.BootstrapISOName(),
+		nvramPath:        machineScope.NVRAMPath(),
+		ignitionFilePath: machineScope.IgnitionFilePath(),
 	}
 
-	// Step 1: Create root disk if it does not exist.
-	rootExists, err := libvirtClient.VolumeExists(ctx, storagePool, rootDiskVolume)
+	// Enrich logger with host and domain context.
+	log = log.WithValues("host", libvirtHost.Name, "domain", rc.domainName)
+	ctx = logf.IntoContext(ctx, log)
+
+	// Step 0+1: Ensure ephemeral pool and root disk.
+	if err := r.reconcileRootDisk(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 2: Prepare bootstrap artifacts.
+	if err := r.reconcileBootstrapArtifacts(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 3: Create additional disks.
+	if err := r.reconcileAdditionalDisks(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 4+5: Define and start domain.
+	domainInfo, err := r.reconcileDomain(ctx, rc)
 	if err != nil {
-		return r.handleLibvirtError(libvirtMachine, err, "checking root disk")
-	}
-	if !rootExists {
-		log.Info("Creating root disk volume", "volume", rootDiskVolume, "strategy", libvirtMachine.Spec.RootDisk.CloneStrategy)
-		sizeBytes := libvirtMachine.Spec.RootDisk.Size.Value()
-		diskStart := time.Now()
-
-		switch libvirtMachine.Spec.RootDisk.CloneStrategy {
-		case infrav1.CloneStrategyFullClone:
-			if err := libvirtClient.CloneVolume(ctx, baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage, rootDiskVolume); err != nil {
-				if libvirt.IsNotFound(err) {
-					log.Error(err, "Terminal error", "operation", "cloning root disk (full-clone)", "reason", infrav1.ReasonBaseImageNotFound)
-					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
-						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, baseImagePool))
-				}
-				log.Error(err, "Failed to clone root disk (full-clone)", "volume", rootDiskVolume)
-				return r.handleLibvirtError(libvirtMachine, err, "cloning root disk (full-clone)")
-			}
-		default: // copy-on-write
-			backingPath, err := libvirtClient.GetVolumePath(ctx, baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage)
-			if err != nil {
-				if libvirt.IsNotFound(err) {
-					log.Error(err, "Terminal error", "operation", "getting base image path", "reason", infrav1.ReasonBaseImageNotFound)
-					return r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
-						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, baseImagePool))
-				}
-				log.Error(err, "Failed to get base image path", "volume", rootDiskVolume)
-				return r.handleLibvirtError(libvirtMachine, err, "getting base image path")
-			}
-			if err := libvirtClient.CreateVolumeFromBackingStore(ctx, storagePool, rootDiskVolume, backingPath, sizeBytes); err != nil {
-				log.Error(err, "Failed to create root disk (copy-on-write)", "volume", rootDiskVolume)
-				return r.handleLibvirtError(libvirtMachine, err, "creating root disk (copy-on-write)")
-			}
-		}
-		log.Info("Created root disk volume", "volume", rootDiskVolume, "duration", time.Since(diskStart).String())
-	}
-
-	// Step 2: Prepare bootstrap data.
-	ignitionFilePath := machineScope.IgnitionFilePath()
-	bootstrapData, err := machineScope.GetBootstrapData(ctx)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to get bootstrap data: %w", err)
-	}
-
-	switch libvirtMachine.Spec.BootstrapFormat {
-	case infrav1.BootstrapFormatIgnition:
-		// Inject hostname and providerID into ignition config so the
-		// node registers with a predictable name and providerID that
-		// the machine-approver can correlate with the CAPI Machine.
-		hostname := machineScope.DomainName()
-		providerID := machineScope.ProviderID()
-		injected, err := ignition.InjectMachineMetadata(bootstrapData, hostname, providerID)
-		if err != nil {
-			log.Info("Could not inject machine metadata into ignition (using original)", "error", err)
-		} else {
-			bootstrapData = injected
-			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
-		}
-
-		// Write ignition JSON to host filesystem for fw_cfg delivery.
-		log.Info("Writing ignition config to host", "path", ignitionFilePath)
-		bootstrapStart := time.Now()
-		if err := libvirtClient.WriteRemoteFile(ctx, ignitionFilePath, bootstrapData); err != nil {
-			log.Error(err, "Failed to write ignition file", "path", ignitionFilePath)
-			return r.handleLibvirtError(libvirtMachine, err, "writing ignition file")
-		}
-		log.Info("Wrote ignition config", "path", ignitionFilePath, "size", len(bootstrapData), "duration", time.Since(bootstrapStart).String())
-
-	case infrav1.BootstrapFormatCloudInit:
-		// Create NoCloud ISO and upload to storage pool.
-		isoExists, err := libvirtClient.VolumeExists(ctx, storagePool, bootstrapISO)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "checking bootstrap ISO")
-		}
-		if !isoExists {
-			log.Info("Creating cloud-init ISO", "iso", bootstrapISO)
-			bootstrapStart := time.Now()
-			isoData, err := r.ISOBuilder.BuildCloudInitISO(bootstrapData, domainName, domainName)
-			if err != nil {
-				log.Error(err, "Terminal error", "operation", "building cloud-init ISO", "reason", infrav1.ReasonInvalidBootstrapData)
-				return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
-					fmt.Sprintf("failed to build cloud-init ISO: %v", err))
-			}
-			if err := libvirtClient.UploadVolumeFromBytes(ctx, storagePool, bootstrapISO, isoData); err != nil {
-				log.Error(err, "Failed to upload cloud-init ISO", "iso", bootstrapISO)
-				return r.handleLibvirtError(libvirtMachine, err, "uploading cloud-init ISO")
-			}
-			log.Info("Created cloud-init ISO", "iso", bootstrapISO, "duration", time.Since(bootstrapStart).String())
-		}
-
-	default:
-		log.Error(fmt.Errorf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat),
-			"Terminal error", "operation", "preparing bootstrap", "reason", infrav1.ReasonInvalidBootstrapData)
-		return r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
-			fmt.Sprintf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat))
-	}
-
-	// Step 3: Create additional disks if they do not exist.
-	var additionalDiskVolumes []string
-	var additionalDiskParams []libvirt.DiskParam
-	for _, disk := range libvirtMachine.Spec.AdditionalDisks {
-		volName := fmt.Sprintf("%s-%s.qcow2", machineScope.ArtifactBaseName(), disk.Name)
-		additionalDiskVolumes = append(additionalDiskVolumes, volName)
-
-		exists, err := libvirtClient.VolumeExists(ctx, disk.StoragePool, volName)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "checking additional disk")
-		}
-		if !exists {
-			log.Info("Creating additional disk", "volume", volName)
-			if err := libvirtClient.CreateVolume(ctx, disk.StoragePool, volName, disk.Size.Value()); err != nil {
-				return r.handleLibvirtError(libvirtMachine, err, "creating additional disk")
-			}
-		}
-
-		diskPath, err := libvirtClient.GetVolumePath(ctx, disk.StoragePool, volName)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "getting additional disk path")
-		}
-		additionalDiskParams = append(additionalDiskParams, libvirt.DiskParam{
-			Path: diskPath,
-			Bus:  disk.Bus,
-		})
-	}
-
-	// Step 4: Define domain if it does not exist.
-	domainExists, err := libvirtClient.DomainExists(ctx, domainName)
-	if err != nil {
-		return r.handleLibvirtError(libvirtMachine, err, "checking domain")
-	}
-	if !domainExists {
-		log.Info("Defining domain", "domain", domainName)
-		defineStart := time.Now()
-		rootDiskPath, err := libvirtClient.GetVolumePath(ctx, storagePool, rootDiskVolume)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "getting root disk path")
-		}
-
-		xmlParams := libvirt.DomainXMLParams{
-			Name:            domainName,
-			VCPUs:           resolvedVCPUs,
-			MemoryKB:        int64(resolvedMemoryMB) * memoryMBToKBMultiplier,
-			Machine:         libvirtMachine.Spec.Domain.Machine,
-			Firmware:        string(libvirtMachine.Spec.Domain.Firmware),
-			FirmwarePath:    libvirtHost.Spec.FirmwarePath,
-			NVRAMPath:       nvramPath,
-			RootDiskPath:    rootDiskPath,
-			RootDiskBus:     libvirtMachine.Spec.RootDisk.Bus,
-			AdditionalDisks: additionalDiskParams,
-			NetworkType:     string(libvirtMachine.Spec.Network.Type),
-			NetworkName:     libvirtMachine.Spec.Network.Name,
-			NetworkModel:    libvirtMachine.Spec.Network.Model,
-			MACAddress:      libvirtMachine.Spec.Network.MACAddress,
-		}
-
-		switch libvirtMachine.Spec.BootstrapFormat {
-		case infrav1.BootstrapFormatIgnition:
-			xmlParams.IgnitionPath = ignitionFilePath
-		case infrav1.BootstrapFormatCloudInit:
-			isoPath, err := libvirtClient.GetVolumePath(ctx, storagePool, bootstrapISO)
-			if err != nil {
-				return r.handleLibvirtError(libvirtMachine, err, "getting cloud-init ISO path")
-			}
-			xmlParams.BootstrapISOPath = isoPath
-		}
-
-		xmlDef, err := libvirt.GenerateDomainXML(xmlParams)
-		if err != nil {
-			log.Error(err, "Terminal error", "operation", "generating domain XML", "reason", infrav1.ReasonSpecMismatch)
-			return r.setTerminalError(libvirtMachine, infrav1.ReasonSpecMismatch,
-				fmt.Sprintf("failed to generate domain XML: %v", err))
-		}
-
-		if _, err := libvirtClient.DefineDomain(ctx, xmlDef); err != nil {
-			log.Error(err, "Failed to define domain", "domain", domainName)
-			return r.handleLibvirtError(libvirtMachine, err, "defining domain")
-		}
-		log.Info("Defined domain", "domain", domainName, "duration", time.Since(defineStart).String())
-	}
-
-	// Step 5: Start domain if not running.
-	domainInfo, err := libvirtClient.GetDomain(ctx, domainName)
-	if err != nil {
-		return r.handleLibvirtError(libvirtMachine, err, "getting domain info")
-	}
-	if domainInfo.State != "running" {
-		log.Info("Starting domain", "domain", domainName, "currentState", domainInfo.State)
-		startTime := time.Now()
-		if err := libvirtClient.StartDomain(ctx, domainName); err != nil {
-			log.Error(err, "Failed to start domain", "domain", domainName)
-			return r.handleLibvirtError(libvirtMachine, err, "starting domain")
-		}
-		log.Info("Started domain", "domain", domainName, "duration", time.Since(startTime).String())
-		// Re-fetch domain info after start.
-		domainInfo, err = libvirtClient.GetDomain(ctx, domainName)
-		if err != nil {
-			return r.handleLibvirtError(libvirtMachine, err, "getting domain info after start")
-		}
+		return ctrl.Result{}, err
 	}
 
 	// Update status.
@@ -544,16 +305,16 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	providerID := machineScope.ProviderID()
 	libvirtMachine.Spec.ProviderID = &providerID
 	artifacts := &infrav1.ManagedArtifacts{
-		DomainName:            domainName,
-		RootDiskVolume:        rootDiskVolume,
-		NVRAMPath:             nvramPath,
-		AdditionalDiskVolumes: additionalDiskVolumes,
+		DomainName:            rc.domainName,
+		RootDiskVolume:        rc.rootDiskVolume,
+		NVRAMPath:             rc.nvramPath,
+		AdditionalDiskVolumes: rc.additionalDiskVolumes,
 	}
 	switch libvirtMachine.Spec.BootstrapFormat {
 	case infrav1.BootstrapFormatIgnition:
-		artifacts.IgnitionFile = ignitionFilePath
+		artifacts.IgnitionFile = rc.ignitionFilePath
 	case infrav1.BootstrapFormatCloudInit:
-		artifacts.BootstrapISO = bootstrapISO
+		artifacts.BootstrapISO = rc.bootstrapISO
 	}
 	if libvirtMachine.Spec.RootDisk.EphemeralPool {
 		artifacts.EphemeralPoolName = machineScope.EphemeralPoolName()
@@ -574,6 +335,363 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	log.Info("Machine infrastructure ready", "providerID", providerID)
 
 	return ctrl.Result{}, nil
+}
+
+// ensureBootstrapData checks that bootstrap data is available and auto-creates
+// the bootstrap secret from the MCS if needed. Returns a non-nil result pointer
+// when reconcileNormal should return early.
+func (r *LibvirtMachineReconciler) ensureBootstrapData(
+	ctx context.Context,
+	libvirtMachine *infrav1.LibvirtMachine,
+	machine *clusterv1.Machine,
+) (*ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if machine.Spec.Bootstrap.DataSecretName == nil {
+		log.Info("Bootstrap data not yet available, requeueing")
+		apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+			Type:               infrav1.BootstrapDataReadyCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonBootstrapDataNotReady,
+			Message:            "Waiting for bootstrap data secret",
+			ObservedGeneration: libvirtMachine.Generation,
+		})
+		return &ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+	}
+
+	// Check if the referenced bootstrap secret exists.
+	bootstrapSecretExists := true
+	{
+		secret := &corev1.Secret{}
+		key := types.NamespacedName{
+			Namespace: machine.Namespace,
+			Name:      *machine.Spec.Bootstrap.DataSecretName,
+		}
+		if err := r.Get(ctx, key, secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				bootstrapSecretExists = false
+			} else {
+				return &ctrl.Result{}, fmt.Errorf("failed to check bootstrap secret: %w", err)
+			}
+		}
+	}
+
+	if !bootstrapSecretExists {
+		if libvirtMachine.Spec.BootstrapFormat == infrav1.BootstrapFormatIgnition {
+			secretName := *machine.Spec.Bootstrap.DataSecretName
+			if err := r.autoCreateBootstrapSecret(ctx, machine, secretName); err != nil {
+				log.Info("Auto-bootstrap from MCS not available, waiting for manual secret creation", "error", err)
+				apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+					Type:               infrav1.BootstrapDataReadyCondition,
+					Status:             metav1.ConditionFalse,
+					Reason:             infrav1.ReasonBootstrapDataNotReady,
+					Message:            "Bootstrap secret not found (MCS auto-fetch failed: " + err.Error() + ")",
+					ObservedGeneration: libvirtMachine.Generation,
+				})
+				return &ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+			}
+			log.Info("Auto-created bootstrap secret from OpenShift MCS", "secret", secretName)
+		} else {
+			log.Info("Bootstrap secret not found, requeueing", "secret", *machine.Spec.Bootstrap.DataSecretName)
+			apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+				Type:               infrav1.BootstrapDataReadyCondition,
+				Status:             metav1.ConditionFalse,
+				Reason:             infrav1.ReasonBootstrapDataNotReady,
+				Message:            "Waiting for bootstrap data secret",
+				ObservedGeneration: libvirtMachine.Generation,
+			})
+			return &ctrl.Result{RequeueAfter: bootstrapNotReadyRequeueInterval}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// resolveAutoSizing resolves VCPUs and memory, falling back to host capacity
+// when the spec values are zero. Returns a non-nil result pointer when the
+// caller should return early.
+func (r *LibvirtMachineReconciler) resolveAutoSizing(
+	ctx context.Context,
+	libvirtMachine *infrav1.LibvirtMachine,
+	libvirtHost *infrav1.LibvirtHost,
+) (int32, int32, *ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	resolvedVCPUs := libvirtMachine.Spec.Domain.VCPUs
+	resolvedMemoryMB := libvirtMachine.Spec.Domain.MemoryMB
+	if resolvedVCPUs == 0 || resolvedMemoryMB == 0 {
+		if libvirtHost.Status.Capacity == nil {
+			log.Info("Host capacity not yet discovered, requeueing")
+			return 0, 0, &ctrl.Result{RequeueAfter: hostNotReadyRequeueInterval}, nil
+		}
+		if resolvedVCPUs == 0 {
+			resolvedVCPUs = libvirtHost.Status.Capacity.AvailableVCPUs
+		}
+		if resolvedMemoryMB == 0 {
+			resolvedMemoryMB = libvirtHost.Status.Capacity.AvailableMemoryMB
+		}
+		if resolvedVCPUs <= 0 || resolvedMemoryMB <= 0 {
+			log.Error(fmt.Errorf("insufficient resources: %d vCPUs, %d MB", resolvedVCPUs, resolvedMemoryMB),
+				"Terminal error", "operation", "auto-sizing", "reason", infrav1.ReasonStorageInsufficient)
+			r.setTerminalError(libvirtMachine, infrav1.ReasonStorageInsufficient,
+				fmt.Sprintf("host %s has insufficient available resources: %d vCPUs, %d MB",
+					libvirtHost.Name, resolvedVCPUs, resolvedMemoryMB))
+			return 0, 0, &ctrl.Result{}, nil
+		}
+		log.Info("Auto-sized VM from host capacity", "vcpus", resolvedVCPUs, "memoryMB", resolvedMemoryMB)
+	}
+	return resolvedVCPUs, resolvedMemoryMB, nil, nil
+}
+
+// reconcileRootDisk ensures the ephemeral pool (if requested) and root disk
+// volume exist on the libvirt host.
+func (r *LibvirtMachineReconciler) reconcileRootDisk(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	libvirtMachine := rc.libvirtMachine
+	libvirtClient := rc.libvirtClient
+
+	// Create ephemeral tmpfs pool if requested and not yet present.
+	if libvirtMachine.Spec.RootDisk.EphemeralPool {
+		ephPoolName := rc.machineScope.EphemeralPoolName()
+		ephPoolPath := rc.machineScope.EphemeralPoolPath()
+		poolExists, err := libvirtClient.PoolExists(ctx, ephPoolName)
+		if err != nil {
+			return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool")
+		}
+		if !poolExists {
+			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath)
+			if err := libvirtClient.CreateTmpfsPool(ctx, ephPoolName, ephPoolPath); err != nil {
+				log.Error(err, "Failed to create ephemeral tmpfs pool", "pool", ephPoolName)
+				return r.handleLibvirtError(libvirtMachine, err, "creating ephemeral pool")
+			}
+			log.Info("Created ephemeral tmpfs pool", "pool", ephPoolName)
+		}
+		// Override storagePool to use the ephemeral pool for all VM artifacts.
+		rc.storagePool = ephPoolName
+	}
+
+	// Create root disk if it does not exist.
+	rootExists, err := libvirtClient.VolumeExists(ctx, rc.storagePool, rc.rootDiskVolume)
+	if err != nil {
+		return r.handleLibvirtError(libvirtMachine, err, "checking root disk")
+	}
+	if !rootExists {
+		log.Info("Creating root disk volume", "volume", rc.rootDiskVolume, "strategy", libvirtMachine.Spec.RootDisk.CloneStrategy)
+		sizeBytes := libvirtMachine.Spec.RootDisk.Size.Value()
+		diskStart := time.Now()
+
+		switch libvirtMachine.Spec.RootDisk.CloneStrategy {
+		case infrav1.CloneStrategyFullClone:
+			if err := libvirtClient.CloneVolume(ctx, rc.baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage, rc.rootDiskVolume); err != nil {
+				if libvirt.IsNotFound(err) {
+					log.Error(err, "Terminal error", "operation", "cloning root disk (full-clone)", "reason", infrav1.ReasonBaseImageNotFound)
+					r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, rc.baseImagePool))
+					return nil
+				}
+				log.Error(err, "Failed to clone root disk (full-clone)", "volume", rc.rootDiskVolume)
+				return r.handleLibvirtError(libvirtMachine, err, "cloning root disk (full-clone)")
+			}
+		default: // copy-on-write
+			backingPath, err := libvirtClient.GetVolumePath(ctx, rc.baseImagePool, libvirtMachine.Spec.RootDisk.BaseImage)
+			if err != nil {
+				if libvirt.IsNotFound(err) {
+					log.Error(err, "Terminal error", "operation", "getting base image path", "reason", infrav1.ReasonBaseImageNotFound)
+					r.setTerminalError(libvirtMachine, infrav1.ReasonBaseImageNotFound,
+						fmt.Sprintf("Base image %q not found in pool %q", libvirtMachine.Spec.RootDisk.BaseImage, rc.baseImagePool))
+					return nil
+				}
+				log.Error(err, "Failed to get base image path", "volume", rc.rootDiskVolume)
+				return r.handleLibvirtError(libvirtMachine, err, "getting base image path")
+			}
+			if err := libvirtClient.CreateVolumeFromBackingStore(ctx, rc.storagePool, rc.rootDiskVolume, backingPath, sizeBytes); err != nil {
+				log.Error(err, "Failed to create root disk (copy-on-write)", "volume", rc.rootDiskVolume)
+				return r.handleLibvirtError(libvirtMachine, err, "creating root disk (copy-on-write)")
+			}
+		}
+		log.Info("Created root disk volume", "volume", rc.rootDiskVolume, "duration", time.Since(diskStart).String())
+	}
+	return nil
+}
+
+// reconcileBootstrapArtifacts prepares bootstrap data (ignition or cloud-init)
+// and writes it to the libvirt host.
+func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	libvirtMachine := rc.libvirtMachine
+	libvirtClient := rc.libvirtClient
+
+	bootstrapData, err := rc.machineScope.GetBootstrapData(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get bootstrap data: %w", err)
+	}
+
+	switch libvirtMachine.Spec.BootstrapFormat {
+	case infrav1.BootstrapFormatIgnition:
+		hostname := rc.machineScope.DomainName()
+		providerID := rc.machineScope.ProviderID()
+		injected, err := ignition.InjectMachineMetadata(bootstrapData, hostname, providerID)
+		if err != nil {
+			log.Info("Could not inject machine metadata into ignition (using original)", "error", err)
+		} else {
+			bootstrapData = injected
+			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
+		}
+
+		log.Info("Writing ignition config to host", "path", rc.ignitionFilePath)
+		bootstrapStart := time.Now()
+		if err := libvirtClient.WriteRemoteFile(ctx, rc.ignitionFilePath, bootstrapData); err != nil {
+			log.Error(err, "Failed to write ignition file", "path", rc.ignitionFilePath)
+			return r.handleLibvirtError(libvirtMachine, err, "writing ignition file")
+		}
+		log.Info("Wrote ignition config", "path", rc.ignitionFilePath, "size", len(bootstrapData), "duration", time.Since(bootstrapStart).String())
+
+	case infrav1.BootstrapFormatCloudInit:
+		isoExists, err := libvirtClient.VolumeExists(ctx, rc.storagePool, rc.bootstrapISO)
+		if err != nil {
+			return r.handleLibvirtError(libvirtMachine, err, "checking bootstrap ISO")
+		}
+		if !isoExists {
+			log.Info("Creating cloud-init ISO", "iso", rc.bootstrapISO)
+			bootstrapStart := time.Now()
+			isoData, err := r.ISOBuilder.BuildCloudInitISO(bootstrapData, rc.domainName, rc.domainName)
+			if err != nil {
+				log.Error(err, "Terminal error", "operation", "building cloud-init ISO", "reason", infrav1.ReasonInvalidBootstrapData)
+				r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
+					fmt.Sprintf("failed to build cloud-init ISO: %v", err))
+				return nil
+			}
+			if err := libvirtClient.UploadVolumeFromBytes(ctx, rc.storagePool, rc.bootstrapISO, isoData); err != nil {
+				log.Error(err, "Failed to upload cloud-init ISO", "iso", rc.bootstrapISO)
+				return r.handleLibvirtError(libvirtMachine, err, "uploading cloud-init ISO")
+			}
+			log.Info("Created cloud-init ISO", "iso", rc.bootstrapISO, "duration", time.Since(bootstrapStart).String())
+		}
+
+	default:
+		log.Error(fmt.Errorf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat),
+			"Terminal error", "operation", "preparing bootstrap", "reason", infrav1.ReasonInvalidBootstrapData)
+		r.setTerminalError(libvirtMachine, infrav1.ReasonInvalidBootstrapData,
+			fmt.Sprintf("unsupported bootstrap format: %s", libvirtMachine.Spec.BootstrapFormat))
+	}
+	return nil
+}
+
+// reconcileAdditionalDisks ensures all additional disks exist and populates
+// the reconcileCtx with volume names and disk parameters.
+func (r *LibvirtMachineReconciler) reconcileAdditionalDisks(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	libvirtMachine := rc.libvirtMachine
+	libvirtClient := rc.libvirtClient
+
+	for _, disk := range libvirtMachine.Spec.AdditionalDisks {
+		volName := fmt.Sprintf("%s-%s.qcow2", rc.machineScope.ArtifactBaseName(), disk.Name)
+		rc.additionalDiskVolumes = append(rc.additionalDiskVolumes, volName)
+
+		exists, err := libvirtClient.VolumeExists(ctx, disk.StoragePool, volName)
+		if err != nil {
+			return r.handleLibvirtError(libvirtMachine, err, "checking additional disk")
+		}
+		if !exists {
+			log.Info("Creating additional disk", "volume", volName)
+			if err := libvirtClient.CreateVolume(ctx, disk.StoragePool, volName, disk.Size.Value()); err != nil {
+				return r.handleLibvirtError(libvirtMachine, err, "creating additional disk")
+			}
+		}
+
+		diskPath, err := libvirtClient.GetVolumePath(ctx, disk.StoragePool, volName)
+		if err != nil {
+			return r.handleLibvirtError(libvirtMachine, err, "getting additional disk path")
+		}
+		rc.additionalDiskParams = append(rc.additionalDiskParams, libvirt.DiskParam{
+			Path: diskPath,
+			Bus:  disk.Bus,
+		})
+	}
+	return nil
+}
+
+// reconcileDomain defines and starts the libvirt domain, returning its info.
+func (r *LibvirtMachineReconciler) reconcileDomain(ctx context.Context, rc *reconcileCtx) (*libvirt.DomainInfo, error) {
+	log := logf.FromContext(ctx)
+	libvirtMachine := rc.libvirtMachine
+	libvirtClient := rc.libvirtClient
+
+	domainExists, err := libvirtClient.DomainExists(ctx, rc.domainName)
+	if err != nil {
+		return nil, r.handleLibvirtError(libvirtMachine, err, "checking domain")
+	}
+	if !domainExists {
+		log.Info("Defining domain", "domain", rc.domainName)
+		defineStart := time.Now()
+		rootDiskPath, err := libvirtClient.GetVolumePath(ctx, rc.storagePool, rc.rootDiskVolume)
+		if err != nil {
+			return nil, r.handleLibvirtError(libvirtMachine, err, "getting root disk path")
+		}
+
+		xmlParams := libvirt.DomainXMLParams{
+			Name:            rc.domainName,
+			VCPUs:           rc.resolvedVCPUs,
+			MemoryKB:        int64(rc.resolvedMemoryMB) * memoryMBToKBMultiplier,
+			Machine:         libvirtMachine.Spec.Domain.Machine,
+			Firmware:        string(libvirtMachine.Spec.Domain.Firmware),
+			FirmwarePath:    rc.libvirtHost.Spec.FirmwarePath,
+			NVRAMPath:       rc.nvramPath,
+			RootDiskPath:    rootDiskPath,
+			RootDiskBus:     libvirtMachine.Spec.RootDisk.Bus,
+			AdditionalDisks: rc.additionalDiskParams,
+			NetworkType:     string(libvirtMachine.Spec.Network.Type),
+			NetworkName:     libvirtMachine.Spec.Network.Name,
+			NetworkModel:    libvirtMachine.Spec.Network.Model,
+			MACAddress:      libvirtMachine.Spec.Network.MACAddress,
+		}
+
+		switch libvirtMachine.Spec.BootstrapFormat {
+		case infrav1.BootstrapFormatIgnition:
+			xmlParams.IgnitionPath = rc.ignitionFilePath
+		case infrav1.BootstrapFormatCloudInit:
+			isoPath, err := libvirtClient.GetVolumePath(ctx, rc.storagePool, rc.bootstrapISO)
+			if err != nil {
+				return nil, r.handleLibvirtError(libvirtMachine, err, "getting cloud-init ISO path")
+			}
+			xmlParams.BootstrapISOPath = isoPath
+		}
+
+		xmlDef, err := libvirt.GenerateDomainXML(xmlParams)
+		if err != nil {
+			log.Error(err, "Terminal error", "operation", "generating domain XML", "reason", infrav1.ReasonSpecMismatch)
+			r.setTerminalError(libvirtMachine, infrav1.ReasonSpecMismatch,
+				fmt.Sprintf("failed to generate domain XML: %v", err))
+			return nil, nil
+		}
+
+		if _, err := libvirtClient.DefineDomain(ctx, xmlDef); err != nil {
+			log.Error(err, "Failed to define domain", "domain", rc.domainName)
+			return nil, r.handleLibvirtError(libvirtMachine, err, "defining domain")
+		}
+		log.Info("Defined domain", "domain", rc.domainName, "duration", time.Since(defineStart).String())
+	}
+
+	// Start domain if not running.
+	domainInfo, err := libvirtClient.GetDomain(ctx, rc.domainName)
+	if err != nil {
+		return nil, r.handleLibvirtError(libvirtMachine, err, "getting domain info")
+	}
+	if domainInfo.State != "running" {
+		log.Info("Starting domain", "domain", rc.domainName, "currentState", domainInfo.State)
+		startTime := time.Now()
+		if err := libvirtClient.StartDomain(ctx, rc.domainName); err != nil {
+			log.Error(err, "Failed to start domain", "domain", rc.domainName)
+			return nil, r.handleLibvirtError(libvirtMachine, err, "starting domain")
+		}
+		log.Info("Started domain", "domain", rc.domainName, "duration", time.Since(startTime).String())
+		// Re-fetch domain info after start.
+		domainInfo, err = libvirtClient.GetDomain(ctx, rc.domainName)
+		if err != nil {
+			return nil, r.handleLibvirtError(libvirtMachine, err, "getting domain info after start")
+		}
+	}
+	return domainInfo, nil
 }
 
 // reconcileDelete cleans up libvirt artifacts and removes the finalizer.
@@ -617,8 +735,8 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 		})
 		return ctrl.Result{RequeueAfter: cleanupStalledRequeueInterval}, nil
 	}
-	defer sshClient.Close()
-	defer libvirtClient.Close()
+	defer func() { _ = sshClient.Close() }()
+	defer func() { _ = libvirtClient.Close() }()
 
 	// Build scope for artifact names.
 	machineScope, err := scope.NewMachineScope(scope.MachineScopeParams{
@@ -788,21 +906,23 @@ func (r *LibvirtMachineReconciler) createClients(ctx context.Context, host *infr
 	return sshClient, libvirtClient, nil
 }
 
-// handleLibvirtError inspects the error and returns appropriate results.
+// handleLibvirtError inspects the error and returns an appropriate error.
+// Terminal libvirt errors are recorded on the machine status and nil is returned
+// (stopping reconciliation); transient errors are returned for retry.
 func (r *LibvirtMachineReconciler) handleLibvirtError(
 	libvirtMachine *infrav1.LibvirtMachine,
 	err error,
 	operation string,
-) (ctrl.Result, error) {
+) error {
 	if libvirt.IsTerminal(err) {
 		reason := infrav1.ReasonSpecMismatch
 		msg := fmt.Sprintf("terminal error during %s: %v", operation, err)
 		libvirtMachine.Status.FailureReason = &reason
 		libvirtMachine.Status.FailureMessage = &msg
 		libvirtMachine.Status.Ready = false
-		return ctrl.Result{}, nil
+		return nil
 	}
-	return ctrl.Result{}, fmt.Errorf("error during %s: %w", operation, err)
+	return fmt.Errorf("error during %s: %w", operation, err)
 }
 
 // setTerminalError sets a terminal failure on the machine and stops reconciliation.
@@ -810,11 +930,10 @@ func (r *LibvirtMachineReconciler) setTerminalError(
 	libvirtMachine *infrav1.LibvirtMachine,
 	reason string,
 	message string,
-) (ctrl.Result, error) {
+) {
 	libvirtMachine.Status.FailureReason = &reason
 	libvirtMachine.Status.FailureMessage = &message
 	libvirtMachine.Status.Ready = false
-	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
