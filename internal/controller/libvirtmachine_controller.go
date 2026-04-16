@@ -36,6 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
+	"github.com/atgreen/caplv/internal/ignition"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
 	"github.com/atgreen/caplv/internal/scope"
@@ -331,6 +332,17 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 	switch libvirtMachine.Spec.BootstrapFormat {
 	case infrav1.BootstrapFormatIgnition:
+		// Inject hostname into ignition config so the node registers
+		// with a predictable name that matches the CAPI Machine.
+		hostname := machineScope.DomainName()
+		injected, err := ignition.InjectHostname(bootstrapData, hostname)
+		if err != nil {
+			log.Info("Could not inject hostname into ignition (using original)", "error", err)
+		} else {
+			bootstrapData = injected
+			log.Info("Injected hostname into ignition config", "hostname", hostname)
+		}
+
 		// Write ignition JSON to host filesystem for fw_cfg delivery.
 		log.Info("Writing ignition config to host", "path", ignitionFilePath)
 		bootstrapStart := time.Now()

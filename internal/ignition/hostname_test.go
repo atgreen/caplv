@@ -1,0 +1,105 @@
+/*
+Copyright 2026 Anthony Green.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package ignition
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestInjectHostnameV3(t *testing.T) {
+	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[]}}`
+	result, err := InjectHostname([]byte(input), "my-worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal(result, &config); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	found := false
+	for _, f := range files {
+		fm := f.(map[string]interface{})
+		if fm["path"] == "/etc/hostname" {
+			contents := fm["contents"].(map[string]interface{})
+			source := contents["source"].(string)
+			if !strings.Contains(source, "my-worker") {
+				t.Errorf("hostname source = %q, want to contain 'my-worker'", source)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected /etc/hostname file in ignition output")
+	}
+}
+
+func TestInjectHostnameV2(t *testing.T) {
+	input := `{"ignition":{"version":"2.2.0"},"storage":{"files":[]}}`
+	result, err := InjectHostname([]byte(input), "my-worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal(result, &config); err != nil {
+		t.Fatalf("failed to parse result: %v", err)
+	}
+
+	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	found := false
+	for _, f := range files {
+		fm := f.(map[string]interface{})
+		if fm["path"] == "/etc/hostname" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected /etc/hostname file in ignition output")
+	}
+}
+
+func TestInjectHostnameReplacesExisting(t *testing.T) {
+	input := `{"ignition":{"version":"3.2.0"},"storage":{"files":[{"path":"/etc/hostname","contents":{"source":"data:,old-name"}}]}}`
+	result, err := InjectHostname([]byte(input), "new-name")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var config map[string]interface{}
+	json.Unmarshal(result, &config)
+
+	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	count := 0
+	for _, f := range files {
+		fm := f.(map[string]interface{})
+		if fm["path"] == "/etc/hostname" {
+			count++
+			contents := fm["contents"].(map[string]interface{})
+			if !strings.Contains(contents["source"].(string), "new-name") {
+				t.Error("hostname not updated to new-name")
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 /etc/hostname entry, got %d", count)
+	}
+}
