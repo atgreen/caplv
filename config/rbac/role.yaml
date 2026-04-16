@@ -7,14 +7,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - endpoints
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - events
   verbs:
   - create
@@ -111,3 +103,12 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - machineconfiguration.openshift.io
+  resources:
+  - machineconfigpools
+  - machineconfigs
+  verbs:
+  - get
+  - list
+  - watch

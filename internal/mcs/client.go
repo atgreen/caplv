@@ -14,104 +14,77 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mcs provides a client for the OpenShift Machine Config Server.
-// When CAPLV runs on an OpenShift cluster, it can fetch worker ignition
-// configs directly from the in-cluster MCS, eliminating the need for
-// users to manually create bootstrap secrets.
+// Package mcs provides a client for fetching OpenShift worker ignition
+// configs. When CAPLV runs on an OpenShift cluster, it reads the rendered
+// worker MachineConfig directly from the Kubernetes API, eliminating the
+// need for users to manually create bootstrap secrets.
 package mcs
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	// ignitionV3Accept is the Accept header to request ignition spec 3.x.
-	ignitionV3Accept = "application/vnd.coreos.ignition+json;version=3.2.0"
-
-	mcsNamespace   = "openshift-machine-config-operator"
-	mcsServiceName = "machine-config-server"
-)
-
-// FetchWorkerIgnition fetches the worker ignition config from the
-// OpenShift Machine Config Server. It discovers the MCS endpoint
-// from the Kubernetes Endpoints resource to bypass ClusterIP routing
-// issues on SNO clusters.
-func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, error) {
-	endpoints := &corev1.Endpoints{}
-	key := types.NamespacedName{
-		Namespace: mcsNamespace,
-		Name:      mcsServiceName,
-	}
-	if err := k8sClient.Get(ctx, key, endpoints); err != nil {
-		return nil, fmt.Errorf("failed to get MCS endpoints: %w", err)
-	}
-
-	// Find the MCS pod IP from the endpoints.
-	for _, subset := range endpoints.Subsets {
-		for _, addr := range subset.Addresses {
-			// Try HTTP on port 22624 first (unauthenticated), then HTTPS on 22623.
-			for _, endpoint := range []string{
-				fmt.Sprintf("http://%s:22624", addr.IP),
-				fmt.Sprintf("https://%s:22623", addr.IP),
-			} {
-				data, err := FetchIgnition(ctx, endpoint, "worker")
-				if err == nil {
-					return data, nil
-				}
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("failed to fetch ignition from any MCS endpoint")
+var machineConfigPoolGVR = schema.GroupVersionResource{
+	Group:    "machineconfiguration.openshift.io",
+	Version:  "v1",
+	Resource: "machineconfigpools",
 }
 
-// FetchIgnition fetches an ignition config for the given role from
-// the specified MCS endpoint.
-func FetchIgnition(ctx context.Context, endpoint, role string) ([]byte, error) {
-	url := fmt.Sprintf("%s/config/%s", endpoint, role)
+var machineConfigGVK = schema.GroupVersionKind{
+	Group:   "machineconfiguration.openshift.io",
+	Version: "v1",
+	Kind:    "MachineConfig",
+}
 
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // MCS uses self-signed certs in-cluster
-			},
-		},
+// FetchWorkerIgnition reads the rendered worker ignition config from the
+// OpenShift MachineConfig API. It looks up the current rendered worker
+// MachineConfig name from the worker MachineConfigPool, then extracts
+// the ignition config from spec.config.
+func FetchWorkerIgnition(ctx context.Context, k8sClient client.Client) ([]byte, error) {
+	// Get the worker MachineConfigPool to find the rendered config name.
+	mcp := &unstructured.Unstructured{}
+	mcp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "machineconfiguration.openshift.io",
+		Version: "v1",
+		Kind:    "MachineConfigPool",
+	})
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "worker"}, mcp); err != nil {
+		return nil, fmt.Errorf("failed to get worker MachineConfigPool: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Extract the rendered config name from status.configuration.name.
+	renderedName, found, err := unstructured.NestedString(mcp.Object, "status", "configuration", "name")
+	if err != nil || !found || renderedName == "" {
+		return nil, fmt.Errorf("worker MachineConfigPool has no rendered configuration")
+	}
+
+	// Get the rendered MachineConfig.
+	mc := &unstructured.Unstructured{}
+	mc.SetGroupVersionKind(machineConfigGVK)
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: renderedName}, mc); err != nil {
+		return nil, fmt.Errorf("failed to get rendered MachineConfig %s: %w", renderedName, err)
+	}
+
+	// Extract spec.config (the ignition config).
+	config, found, err := unstructured.NestedMap(mc.Object, "spec", "config")
+	if err != nil || !found {
+		return nil, fmt.Errorf("rendered MachineConfig %s has no spec.config", renderedName)
+	}
+
+	// Marshal the ignition config to JSON.
+	data, err := json.Marshal(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Accept", ignitionV3Accept)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ignition from MCS: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("MCS returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read MCS response: %w", err)
+		return nil, fmt.Errorf("failed to marshal ignition config: %w", err)
 	}
 
 	if len(data) == 0 {
-		return nil, fmt.Errorf("MCS returned empty ignition config")
+		return nil, fmt.Errorf("rendered MachineConfig produced empty ignition config")
 	}
 
 	return data, nil
