@@ -191,10 +191,22 @@ spec:
       bootstrapFormat: "ignition"
 ```
 
-### Create a worker directly (no bootstrap secret needed)
+### Create a worker directly
 
-On OpenShift, CAPLV auto-fetches the worker ignition from the Machine
-Config Server. Just create a Machine + LibvirtMachine:
+First, fetch the worker ignition from the Machine Config Server on a
+cluster node and create a bootstrap secret:
+
+```bash
+ssh core@<node-ip> "sudo curl -sk \
+  -H 'Accept: application/vnd.coreos.ignition+json;version=3.2.0' \
+  https://localhost:22623/config/worker" > worker-ignition.json
+
+kubectl create secret generic worker-bootstrap -n default \
+  --from-file=value=worker-ignition.json \
+  --from-literal=format=ignition
+```
+
+Then create a Machine + LibvirtMachine:
 
 ```yaml
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
@@ -233,19 +245,19 @@ metadata:
     cluster.x-k8s.io/cluster-name: my-ocp-cluster
 spec:
   clusterName: my-ocp-cluster
+  bootstrap:
+    dataSecretName: worker-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: LibvirtMachine
     name: worker01
-    namespace: default
 ```
 
 CAPLV will automatically:
-1. Fetch worker ignition from the in-cluster MCS
-2. Inject hostname (`default-my-ocp-cluster-worker01`) and providerID
-3. Provision the VM on the libvirt host
-4. Auto-approve the kubelet CSR
-5. The node joins the cluster as a worker
+1. Inject hostname (`default-my-ocp-cluster-worker01`) and providerID
+2. Provision the VM on the libvirt host
+3. Auto-approve the kubelet CSR
+4. The node joins the cluster as a worker
 
 To delete, just `kubectl delete machine worker01` — CAPLV destroys the
 VM, cleans up storage, and removes the Node object.
@@ -335,12 +347,6 @@ Node objects in the cluster.
 - **Ephemeral storage** — `ephemeralPool: true` creates a per-machine tmpfs
   mount and libvirt pool on demand, destroys both on cleanup. No host setup
   required, no persistent storage touched, RAM reclaimed when the VM goes away.
-- **Automatic OpenShift bootstrap** — on OpenShift clusters, CAPLV auto-fetches
-  the worker ignition config from the in-cluster Machine Config Server (MCS).
-  No manual ignition fetch, no bootstrap secrets to create — just create a
-  Machine + LibvirtMachine and CAPLV handles the rest. The ignition version
-  (spec 3.x) is negotiated automatically. For non-OpenShift clusters, a
-  bootstrap secret can be provided manually.
 - **Metadata injection** — CAPLV injects the machine hostname and providerID
   into ignition configs before writing them to the host. The hostname is set
   via `/etc/hostname` (using the domain name `<namespace>-<cluster>-<machine>`)
@@ -500,7 +506,6 @@ internal/
   ignition/            Ignition config manipulation (hostname and providerID injection)
   libvirt/             Client interface, virsh-over-SSH, domain XML generation
   iso/                 Cloud-init NoCloud ISO creation (pure Go, go-diskfs)
-  mcs/                 OpenShift Machine Config Server client (auto-fetch worker ignition)
   ssh/                 SSH client with host key verification
   scope/               MachineScope — gathers reconciliation context, artifact naming
   webhook/             Admission webhook (immutable spec, required static IP, one VM per host)
