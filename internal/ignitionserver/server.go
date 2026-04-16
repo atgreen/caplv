@@ -61,8 +61,13 @@ func StartCommand(ignitionFilePath string, port int) string {
 		ServerBinaryPath, ignitionFilePath, port)
 }
 
-// StopCommand returns a command to kill the ignition server for a machine.
+// StopCommand returns a command to kill the ignition server and close the firewall port.
 func StopCommand(port int) string {
-	return fmt.Sprintf("pkill -f 'ignition-server.*%d' 2>/dev/null || true", port)
+	return fmt.Sprintf("pkill -f 'ignition-server.*%d' 2>/dev/null; firewall-cmd --zone=libvirt --remove-port=%d/tcp 2>/dev/null; true", port, port)
+}
+
+// OpenFirewallCommand returns a command to open the server port in the libvirt firewall zone.
+func OpenFirewallCommand(port int) string {
+	return fmt.Sprintf("firewall-cmd --zone=libvirt --add-port=%d/tcp 2>/dev/null || true", port)
 }
 

@@ -578,6 +578,10 @@ func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Conte
 				log.Info("Failed to start ignition-server (falling back to fw_cfg)", "error", err)
 			} else {
 				log.Info("Started ignition HTTP server on host", "port", port, "hostIP", hostIP)
+					// Open the firewall port so the VM can reach the server.
+					if _, err := libvirtClient.RunSSHCommand(ctx, "sudo "+ignsrv.OpenFirewallCommand(port)); err != nil {
+						log.Info("Failed to open firewall port (may not be needed)", "error", err)
+					}
 				pointer, err := ignsrv.PointerIgnition(hostIP, port)
 				if err == nil {
 					// Overwrite the ignition file with the tiny pointer.
