@@ -262,6 +262,42 @@ CAPLV will automatically:
 To delete, just `kubectl delete machine worker01` — CAPLV destroys the
 VM, cleans up storage, and removes the Node object.
 
+### Using with 5-Spot ScheduledMachines
+
+When using [5-Spot](https://github.com/finos/5-spot) to schedule workers,
+install the [capi-bootstrap-ignition](https://github.com/atgreen/capi-bootstrap-ignition)
+provider. This satisfies the CAPI bootstrap contract so 5-Spot's existing
+`bootstrapSpec` flow works without modification:
+
+```yaml
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: spot-worker-01
+spec:
+  clusterName: my-ocp-cluster
+  schedule:
+    daysOfWeek: ["mon-fri"]
+    hoursOfDay: ["9-17"]
+    timezone: "America/New_York"
+    enabled: true
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
+    kind: IgnitionConfig
+    spec:
+      secretRef:
+        name: worker-ignition
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtMachine
+    spec:
+      hostRef:
+        name: rhel-host-01
+      # ... VM configuration
+```
+
+The same `worker-ignition` Secret serves all ScheduledMachines in the cluster.
+
 ### Ephemeral storage with tmpfs
 
 VMs are ephemeral — created and destroyed on demand by 5-Spot schedules.
