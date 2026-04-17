@@ -18,9 +18,9 @@ on the device at all.
 
 ```
 5-Spot: schedule becomes active
-  → Creates CAPI Machine + CAPLV LibvirtMachine
-    → CAPLV auto-fetches worker ignition from the OpenShift Machine Config Server
-      → Injects hostname + providerID into ignition config
+  → Creates IgnitionConfig + LibvirtMachine + CAPI Machine
+    → capi-bootstrap-ignition copies ignition data, reports ready
+      → CAPLV injects hostname + providerID into ignition config
         → Connects to libvirt host over SSH
           → Clones RHCOS base image, writes ignition config
             → Defines and starts KVM domain
