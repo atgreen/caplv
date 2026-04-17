@@ -47,7 +47,10 @@ over its own SSH connection.
 Before creating any ScheduledMachine resources, the OpenShift cluster
 needs these one-time prerequisites:
 
-**1. Install CAPI, 5-Spot, and CAPLV** on the OpenShift cluster.
+**1. Install CAPI, 5-Spot, CAPLV, and
+[capi-bootstrap-ignition](https://github.com/atgreen/capi-bootstrap-ignition)**
+on the OpenShift cluster. The bootstrap provider bridges OpenShift's
+ignition-based worker bootstrap with the CAPI bootstrap contract.
 
 **2. Create a CAPI Cluster resource** pointing to itself:
 
