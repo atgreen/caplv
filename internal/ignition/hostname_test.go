@@ -34,17 +34,17 @@ func TestInjectHostnameV3(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(result, &config); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 
-	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	files := config["storage"].(map[string]any)["files"].([]any)
 	found := false
 	for _, f := range files {
-		fm := f.(map[string]interface{})
+		fm := f.(map[string]any)
 		if fm["path"] == testEtcHostnamePath {
-			contents := fm["contents"].(map[string]interface{})
+			contents := fm["contents"].(map[string]any)
 			source := contents["source"].(string)
 			if !strings.Contains(source, "my-worker") {
 				t.Errorf("hostname source = %q, want to contain 'my-worker'", source)
@@ -64,15 +64,15 @@ func TestInjectHostnameV2(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(result, &config); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 
-	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	files := config["storage"].(map[string]any)["files"].([]any)
 	found := false
 	for _, f := range files {
-		fm := f.(map[string]interface{})
+		fm := f.(map[string]any)
 		if fm["path"] == testEtcHostnamePath {
 			found = true
 		}
@@ -89,18 +89,18 @@ func TestInjectHostnameReplacesExisting(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(result, &config); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 
-	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	files := config["storage"].(map[string]any)["files"].([]any)
 	count := 0
 	for _, f := range files {
-		fm := f.(map[string]interface{})
+		fm := f.(map[string]any)
 		if fm["path"] == testEtcHostnamePath {
 			count++
-			contents := fm["contents"].(map[string]interface{})
+			contents := fm["contents"].(map[string]any)
 			if !strings.Contains(contents["source"].(string), "new-name") {
 				t.Error("hostname not updated to new-name")
 			}
@@ -118,16 +118,16 @@ func TestInjectMachineMetadata(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(result, &config); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 
-	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	files := config["storage"].(map[string]any)["files"].([]any)
 
 	paths := make(map[string]bool)
 	for _, f := range files {
-		fm := f.(map[string]interface{})
+		fm := f.(map[string]any)
 		paths[fm["path"].(string)] = true
 	}
 
@@ -149,16 +149,16 @@ func TestInjectMachineMetadataProviderIDContent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(result, &config); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
 
-	files := config["storage"].(map[string]interface{})["files"].([]interface{})
+	files := config["storage"].(map[string]any)["files"].([]any)
 	for _, f := range files {
-		fm := f.(map[string]interface{})
+		fm := f.(map[string]any)
 		if fm["path"] == "/etc/systemd/system/kubelet.service.d/90-provider-id.conf" {
-			contents := fm["contents"].(map[string]interface{})
+			contents := fm["contents"].(map[string]any)
 			source := contents["source"].(string)
 			if !strings.Contains(source, "provider-id") {
 				t.Errorf("drop-in source = %q, want to contain 'provider-id'", source)

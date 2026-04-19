@@ -176,7 +176,6 @@ type reconcileCtx struct {
 	bootstrapISO     string
 	nvramPath        string
 	ignitionFilePath string
-	ignitionISO      string // populated when ignition is delivered via ISO
 
 	// Populated by reconcileAdditionalDisks.
 	additionalDiskVolumes []string
@@ -244,9 +243,9 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	}
 
 	// Resolve auto-sizing: if vcpus or memoryMB are zero, use host capacity.
-	resolvedVCPUs, resolvedMemoryMB, result, err := r.resolveAutoSizing(ctx, libvirtMachine, libvirtHost)
+	resolvedVCPUs, resolvedMemoryMB, result := r.resolveAutoSizing(ctx, libvirtMachine, libvirtHost)
 	if result != nil {
-		return *result, err
+		return *result, nil
 	}
 
 	// Compute artifact names and storage pools.
@@ -387,7 +386,7 @@ func (r *LibvirtMachineReconciler) resolveAutoSizing(
 	ctx context.Context,
 	libvirtMachine *infrav1.LibvirtMachine,
 	libvirtHost *infrav1.LibvirtHost,
-) (int32, int32, *ctrl.Result, error) {
+) (int32, int32, *ctrl.Result) {
 	log := logf.FromContext(ctx)
 
 	resolvedVCPUs := libvirtMachine.Spec.Domain.VCPUs
@@ -395,7 +394,7 @@ func (r *LibvirtMachineReconciler) resolveAutoSizing(
 	if resolvedVCPUs == 0 || resolvedMemoryMB == 0 {
 		if libvirtHost.Status.Capacity == nil {
 			log.Info("Host capacity not yet discovered, requeueing")
-			return 0, 0, &ctrl.Result{RequeueAfter: hostNotReadyRequeueInterval}, nil
+			return 0, 0, &ctrl.Result{RequeueAfter: hostNotReadyRequeueInterval}
 		}
 		if resolvedVCPUs == 0 {
 			resolvedVCPUs = libvirtHost.Status.Capacity.AvailableVCPUs
@@ -409,11 +408,11 @@ func (r *LibvirtMachineReconciler) resolveAutoSizing(
 			r.setTerminalError(libvirtMachine, infrav1.ReasonStorageInsufficient,
 				fmt.Sprintf("host %s has insufficient available resources: %d vCPUs, %d MB",
 					libvirtHost.Name, resolvedVCPUs, resolvedMemoryMB))
-			return 0, 0, &ctrl.Result{}, nil
+			return 0, 0, &ctrl.Result{}
 		}
 		log.Info("Auto-sized VM from host capacity", "vcpus", resolvedVCPUs, "memoryMB", resolvedMemoryMB)
 	}
-	return resolvedVCPUs, resolvedMemoryMB, nil, nil
+	return resolvedVCPUs, resolvedMemoryMB, nil
 }
 
 // reconcileRootDisk ensures the ephemeral pool (if requested) and root disk
@@ -803,7 +802,6 @@ func (r *LibvirtMachineReconciler) reconcileDelete(
 
 	return ctrl.Result{}, nil
 }
-
 
 // createClients creates SSH and libvirt clients for the given host.
 func (r *LibvirtMachineReconciler) createClients(ctx context.Context, host *infrav1.LibvirtHost) (*gossh.Client, libvirt.Client, error) {

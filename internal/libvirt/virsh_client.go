@@ -476,7 +476,6 @@ func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
 	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", path))
 }
 
-
 // Close closes the underlying SSH connection.
 func (c *VirshClient) Close() error {
 	if c.sshClient != nil {
