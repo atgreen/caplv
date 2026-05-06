@@ -510,6 +510,26 @@ func (r *LibvirtMachineReconciler) reconcileBootstrapArtifacts(ctx context.Conte
 			log.Info("Injected machine metadata into ignition config", "hostname", hostname, "providerID", providerID)
 		}
 
+		// Inject static network configuration for OVN-Kubernetes br-ex.
+		netSpec := libvirtMachine.Spec.Network
+		if len(netSpec.Addresses) > 0 {
+			netCfg := ignition.NetworkConfig{
+				Addresses: netSpec.Addresses,
+				Gateway:   netSpec.Gateway,
+			}
+			if netSpec.DNS != nil {
+				netCfg.DNSServers = netSpec.DNS.Nameservers
+				netCfg.DNSSearch = netSpec.DNS.SearchDomains
+			}
+			injectedNet, err := ignition.InjectStaticNetwork(bootstrapData, netCfg)
+			if err != nil {
+				log.Info("Could not inject static network config into ignition (using original)", "error", err)
+			} else {
+				bootstrapData = injectedNet
+				log.Info("Injected static network config into ignition", "addresses", netSpec.Addresses, "gateway", netSpec.Gateway)
+			}
+		}
+
 		// Write the full ignition config to the host filesystem.
 		log.Info("Writing ignition config to host", "path", rc.ignitionFilePath)
 		bootstrapStart := time.Now()
