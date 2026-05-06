@@ -41,8 +41,10 @@ type NetworkConfig struct {
 // NIC is enslaved to an OVS bridge (br-ex), so the static IP must be
 // configured on br-ex rather than the physical interface.
 //
-// This injects a NetworkManager dispatcher script that reconfigures br-ex
-// with the static IP after OVN sets up the bridge.
+// OVN's configure-ovs script creates its own br-ex connection profile,
+// overriding any NMConnection file we drop in. To work around this, we
+// inject a oneshot systemd unit that waits for br-ex to appear, then
+// reconfigures the existing OVN-managed connection with static addressing.
 func InjectStaticNetwork(ignitionData []byte, net NetworkConfig) ([]byte, error) {
 	if len(net.Addresses) == 0 {
 		return ignitionData, nil
@@ -69,52 +71,110 @@ func InjectStaticNetwork(ignitionData []byte, net NetworkConfig) ([]byte, error)
 		return nil, fmt.Errorf("unsupported ignition version: %s", version)
 	}
 
-	nmConn := generateBrExNMConnection(net)
+	script := generateStaticIPScript(net)
 	injectFile(config,
-		"/etc/NetworkManager/system-connections/br-ex-static.nmconnection",
-		"data:,"+url.PathEscape(nmConn), 0o600, isV3)
+		"/usr/local/bin/caplv-static-ip.sh",
+		"data:,"+url.PathEscape(script), 0o755, isV3)
+
+	unit := generateStaticIPUnit()
+	injectSystemdUnit(config, "caplv-static-ip.service", unit, true, isV3)
 
 	return json.Marshal(config)
 }
 
-// generateBrExNMConnection creates an NMConnection keyfile that configures
-// br-ex with static addressing. OVN-Kubernetes creates br-ex as an
-// ovs-interface; this connection profile overrides its DHCP configuration.
-func generateBrExNMConnection(net NetworkConfig) string {
+// generateStaticIPScript creates a shell script that modifies the
+// OVN-managed br-ex connection to use static addressing.
+func generateStaticIPScript(net NetworkConfig) string {
 	var b strings.Builder
 
-	b.WriteString("[connection]\n")
-	b.WriteString("id=br-ex-static\n")
-	b.WriteString("type=ovs-interface\n")
-	b.WriteString("interface-name=br-ex\n")
-	b.WriteString("master=br-ex\n")
-	b.WriteString("slave-type=ovs-port\n")
-	b.WriteString("autoconnect=true\n")
-	b.WriteString("autoconnect-priority=100\n")
-	b.WriteString("\n")
+	b.WriteString("#!/bin/bash\n")
+	b.WriteString("# CAPLV: Reconfigure br-ex with static IP after OVN setup.\n")
+	b.WriteString("# Wait for br-ex to be created by OVN's configure-ovs.\n")
+	b.WriteString("for i in $(seq 1 120); do\n")
+	b.WriteString("  if nmcli -t -f NAME con show --active 2>/dev/null | grep -q ovs-if-br-ex; then\n")
+	b.WriteString("    break\n")
+	b.WriteString("  fi\n")
+	b.WriteString("  sleep 2\n")
+	b.WriteString("done\n\n")
 
-	b.WriteString("[ovs-interface]\n")
-	b.WriteString("type=internal\n")
-	b.WriteString("\n")
+	b.WriteString("# Find the OVN-managed br-ex connection name\n")
+	b.WriteString("BREX_CON=$(nmcli -t -f NAME con show | grep -m1 ovs-if-br-ex)\n")
+	b.WriteString("if [ -z \"$BREX_CON\" ]; then\n")
+	b.WriteString("  echo 'caplv-static-ip: br-ex connection not found, exiting'\n")
+	b.WriteString("  exit 1\n")
+	b.WriteString("fi\n\n")
 
-	b.WriteString("[ipv4]\n")
-	b.WriteString("method=manual\n")
-	for i, addr := range net.Addresses {
-		b.WriteString(fmt.Sprintf("address%d=%s\n", i+1, addr))
-	}
+	b.WriteString("# Reconfigure with static IP\n")
+	b.WriteString("nmcli con mod \"$BREX_CON\" ipv4.method manual \\\n")
+
+	addrs := make([]string, len(net.Addresses))
+	copy(addrs, net.Addresses)
+	b.WriteString(fmt.Sprintf("  ipv4.addresses \"%s\"", strings.Join(addrs, ",")))
+
 	if net.Gateway != "" {
-		b.WriteString(fmt.Sprintf("gateway=%s\n", net.Gateway))
+		b.WriteString(fmt.Sprintf(" \\\n  ipv4.gateway \"%s\"", net.Gateway))
 	}
 	if len(net.DNSServers) > 0 {
-		b.WriteString(fmt.Sprintf("dns=%s;\n", strings.Join(net.DNSServers, ";")))
+		b.WriteString(fmt.Sprintf(" \\\n  ipv4.dns \"%s\"", strings.Join(net.DNSServers, ",")))
 	}
 	if len(net.DNSSearch) > 0 {
-		b.WriteString(fmt.Sprintf("dns-search=%s;\n", strings.Join(net.DNSSearch, ";")))
+		b.WriteString(fmt.Sprintf(" \\\n  ipv4.dns-search \"%s\"", strings.Join(net.DNSSearch, ",")))
 	}
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
-	b.WriteString("[ipv6]\n")
-	b.WriteString("method=disabled\n")
+	b.WriteString("# Apply the changes\n")
+	b.WriteString("nmcli con up \"$BREX_CON\"\n")
+	b.WriteString("echo \"caplv-static-ip: br-ex configured with static IP\"\n")
 
 	return b.String()
+}
+
+// generateStaticIPUnit creates a systemd unit that runs the static IP
+// script after the network is online.
+func generateStaticIPUnit() string {
+	return `[Unit]
+Description=CAPLV: Configure br-ex with static IP
+After=NetworkManager.service ovs-configuration.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/caplv-static-ip.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
+// injectSystemdUnit adds a systemd unit to the ignition config.
+func injectSystemdUnit(config map[string]any, name, contents string, enabled, isV3 bool) {
+	systemd, ok := config["systemd"].(map[string]any)
+	if !ok {
+		systemd = map[string]any{}
+		config["systemd"] = systemd
+	}
+
+	units, _ := systemd["units"].([]any)
+
+	// Remove any existing unit with the same name.
+	filtered := make([]any, 0, len(units))
+	for _, u := range units {
+		um, ok := u.(map[string]any)
+		if ok {
+			if n, _ := um["name"].(string); n == name {
+				continue
+			}
+		}
+		filtered = append(filtered, u)
+	}
+
+	entry := map[string]any{
+		"name":     name,
+		"enabled":  enabled,
+		"contents": contents,
+	}
+
+	filtered = append(filtered, entry)
+	systemd["units"] = filtered
 }

@@ -1,0 +1,33 @@
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: sno
+rendezvousIP: 192.168.1.9
+hosts:
+  - hostname: spot
+    role: master
+    interfaces:
+      - name: enp1s0
+        macAddress: 08:3a:88:55:be:46
+    networkConfig:
+      interfaces:
+        - name: enp1s0
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            address:
+              - ip: 192.168.1.9
+                prefix-length: 24
+            dhcp: false
+          ipv6:
+            enabled: false
+      dns-resolver:
+        config:
+          server:
+            - 192.168.1.1
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: 192.168.1.1
+            next-hop-interface: enp1s0
