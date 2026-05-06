@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAPLV Demo — Ephemeral Spot Workers on Libvirt</title>
+<style>
+  :root {
+    --bg: #0d1117; --fg: #c9d1d9; --accent: #58a6ff;
+    --card: #161b22; --border: #30363d; --green: #3fb950;
+    --yellow: #d29922; --red: #f85149; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+         background: var(--bg); color: var(--fg); line-height: 1.6;
+         padding: 2rem; max-width: 1100px; margin: auto; }
+  h1 { color: var(--accent); font-size: 1.6rem; margin-bottom: 0.5rem; }
+  h2 { color: var(--green); font-size: 1.2rem; margin: 2rem 0 0.5rem;
+       border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--purple); font-size: 1rem; margin: 1.2rem 0 0.4rem; }
+  p, li { font-size: 0.9rem; }
+  ul { margin-left: 1.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: #8b949e; font-size: 0.95rem; margin-bottom: 1.5rem; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 6px; padding: 1rem 1.2rem; margin: 0.8rem 0; }
+  .card-title { color: var(--yellow); font-weight: bold; margin-bottom: 0.3rem; }
+  pre { background: #0d1117; border: 1px solid var(--border); border-radius: 4px;
+        padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.82rem;
+        line-height: 1.5; margin: 0.5rem 0; }
+  code { color: var(--fg); }
+  .kw { color: var(--accent); }   /* keys */
+  .val { color: var(--green); }   /* values */
+  .cmt { color: #484f58; }        /* comments */
+  .str { color: #a5d6ff; }        /* strings */
+  .flow { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+          margin: 1rem 0; }
+  .flow-box { background: var(--card); border: 1px solid var(--border);
+              border-radius: 4px; padding: 0.5rem 0.8rem; font-size: 0.85rem;
+              text-align: center; min-width: 120px; }
+  .flow-arrow { color: var(--accent); font-size: 1.2rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .tag { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem;
+         border-radius: 3px; margin-right: 0.3rem; }
+  .tag-caplv { background: #1f3a2d; color: var(--green); }
+  .tag-5spot { background: #2d2a1f; color: var(--yellow); }
+  .tag-ignition { background: #2a1f3a; color: var(--purple); }
+  .tag-capi { background: #1f2a3a; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>CAPLV Demo</h1>
+<p class="subtitle">Ephemeral spot workers on libvirt, managed by Cluster API</p>
+
+<h2>Architecture</h2>
+<p>Three operators work together on a Single Node OpenShift (SNO) cluster
+   to schedule ephemeral libvirt VMs as CAPI worker nodes.</p>
+
+<div class="flow">
+  <div class="flow-box"><span class="tag tag-5spot">5-Spot</span><br>ScheduledMachine</div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-box"><span class="tag tag-capi">CAPI</span><br>Machine</div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-box"><span class="tag tag-caplv">CAPLV</span><br>LibvirtMachine</div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-box"><span class="tag tag-ignition">Ignition</span><br>IgnitionConfig</div>
+  <div class="flow-arrow">&rarr;</div>
+  <div class="flow-box">VM boots &amp;<br>joins cluster</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Component 1: CAPLV (Cluster API Provider Libvirt)</h2>
+<p>Provisions libvirt VMs over SSH. Manages the full VM lifecycle:
+   domain creation, UEFI boot, networking, disk cloning, and teardown.</p>
+
+<h3>LibvirtCluster <span class="tag tag-caplv">CAPLV</span></h3>
+<div class="card">
+<pre><code><span class="kw">apiVersion:</span> <span class="val">infrastructure.cluster.x-k8s.io/v1alpha1</span>
+<span class="kw">kind:</span> <span class="val">LibvirtCluster</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">spot</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">spec:</span>
+  <span class="kw">controlPlaneEndpoint:</span>
+    <span class="kw">host:</span> <span class="str">api.spot.labdroid.net</span>
+    <span class="kw">port:</span> <span class="val">6443</span></code></pre>
+</div>
+
+<h3>LibvirtHost &mdash; laptop <span class="tag tag-caplv">CAPLV</span></h3>
+<div class="card">
+<pre><code><span class="kw">apiVersion:</span> <span class="val">infrastructure.cluster.x-k8s.io/v1alpha1</span>
+<span class="kw">kind:</span> <span class="val">LibvirtHost</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">laptop</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">spec:</span>
+  <span class="kw">uri:</span> <span class="str">qemu+ssh://caplv@192.168.122.1/system</span>
+  <span class="kw">secretRef:</span>
+    <span class="kw">name:</span> <span class="val">laptop-ssh-key</span>
+  <span class="kw">hostKeyFingerprint:</span> <span class="str">SHA256:hAoYrhR9rv7VrGx4JAyeZcpDNdy30MOv23Bbo72iwo8</span>
+  <span class="kw">firmwarePath:</span> <span class="str">/usr/share/OVMF/OVMF_CODE.fd</span>
+  <span class="kw">nvramTemplatePath:</span> <span class="str">/usr/share/OVMF/OVMF_VARS.fd</span>
+  <span class="kw">healthCheckIntervalSeconds:</span> <span class="val">300</span>
+<span class="cmt"># status: 16 vCPUs, 31560 MB total, reachable</span></code></pre>
+</div>
+
+<h3>Cluster <span class="tag tag-capi">CAPI</span></h3>
+<div class="card">
+<pre><code><span class="kw">apiVersion:</span> <span class="val">cluster.x-k8s.io/v1beta1</span>
+<span class="kw">kind:</span> <span class="val">Cluster</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">spot</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">spec:</span>
+  <span class="kw">controlPlaneEndpoint:</span>
+    <span class="kw">host:</span> <span class="str">api.spot.labdroid.net</span>
+    <span class="kw">port:</span> <span class="val">6443</span>
+  <span class="kw">infrastructureRef:</span>
+    <span class="kw">apiVersion:</span> <span class="val">infrastructure.cluster.x-k8s.io/v1alpha1</span>
+    <span class="kw">kind:</span> <span class="val">LibvirtCluster</span>
+    <span class="kw">name:</span> <span class="val">spot</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>Component 2: capi-bootstrap-ignition</h2>
+<p>Generates Ignition/Butane bootstrap data for Fedora CoreOS VMs.
+   Points to a Secret containing the raw Ignition JSON.</p>
+
+<h3>IgnitionConfig <span class="tag tag-ignition">Ignition</span></h3>
+<div class="card">
+<pre><code><span class="kw">apiVersion:</span> <span class="val">bootstrap.cluster.x-k8s.io/v1alpha1</span>
+<span class="kw">kind:</span> <span class="val">IgnitionConfig</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">spot-worker-01</span>   <span class="cmt"># auto-generated by 5-Spot</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">spec:</span>
+  <span class="kw">secretRef:</span>
+    <span class="kw">name:</span> <span class="val">worker-ignition</span>  <span class="cmt"># Secret with key "value" containing Ignition JSON</span></code></pre>
+</div>
+
+<div class="card">
+<div class="card-title">worker-ignition Secret (pre-created)</div>
+<pre><code><span class="kw">apiVersion:</span> <span class="val">v1</span>
+<span class="kw">kind:</span> <span class="val">Secret</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">worker-ignition</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">type:</span> <span class="val">Opaque</span>
+<span class="kw">data:</span>
+  <span class="kw">value:</span> <span class="str">&lt;base64-encoded Ignition JSON&gt;</span>
+<span class="cmt"># Contains: SSH keys, NM cleanup scripts, kubelet join config, etc.</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>Component 3: 5-Spot (Scheduled Machine Controller)</h2>
+<p>Time-based machine lifecycle manager. Creates and destroys CAPI Machine
+   resources (plus their bootstrap and infrastructure refs) based on a
+   day/hour schedule.</p>
+
+<h3>ScheduledMachine <span class="tag tag-5spot">5-Spot</span></h3>
+<div class="card">
+<div class="card-title">This is what you create to add a spot worker:</div>
+<pre><code><span class="kw">apiVersion:</span> <span class="val">5spot.finos.org/v1alpha1</span>
+<span class="kw">kind:</span> <span class="val">ScheduledMachine</span>
+<span class="kw">metadata:</span>
+  <span class="kw">name:</span> <span class="val">spot-worker-01</span>
+  <span class="kw">namespace:</span> <span class="val">default</span>
+<span class="kw">spec:</span>
+  <span class="kw">clusterName:</span> <span class="val">spot</span>
+
+  <span class="kw">schedule:</span>
+    <span class="kw">enabled:</span> <span class="val">true</span>
+    <span class="kw">daysOfWeek:</span>
+      - <span class="str">mon-fri</span>
+    <span class="kw">hoursOfDay:</span>
+      - <span class="str">"9-17"</span>
+    <span class="kw">timezone:</span> <span class="str">America/New_York</span>
+
+  <span class="kw">infrastructureSpec:</span>
+    <span class="kw">apiVersion:</span> <span class="val">infrastructure.cluster.x-k8s.io/v1alpha1</span>
+    <span class="kw">kind:</span> <span class="val">LibvirtMachine</span>
+    <span class="kw">spec:</span>
+      <span class="kw">hostRef:</span>
+        <span class="kw">name:</span> <span class="val">laptop</span>
+      <span class="kw">bootstrapFormat:</span> <span class="val">ignition</span>
+      <span class="kw">domain:</span>
+        <span class="kw">firmware:</span> <span class="val">uefi</span>
+        <span class="kw">machine:</span> <span class="val">q35</span>
+        <span class="kw">vcpus:</span> <span class="val">2</span>
+        <span class="kw">memoryMB:</span> <span class="val">8192</span>
+      <span class="kw">rootDisk:</span>
+        <span class="kw">baseImage:</span> <span class="str">rhcos-qemu.x86_64.qcow2</span>
+        <span class="kw">storagePool:</span> <span class="str">default</span>
+        <span class="kw">size:</span> <span class="str">20Gi</span>
+      <span class="kw">network:</span>
+        <span class="kw">name:</span> <span class="str">default</span>
+        <span class="kw">type:</span> <span class="val">network</span>
+        <span class="kw">addresses:</span>
+          - <span class="str">192.168.122.100/24</span>
+        <span class="kw">gateway:</span> <span class="str">192.168.122.1</span>
+
+  <span class="kw">bootstrapSpec:</span>
+    <span class="kw">apiVersion:</span> <span class="val">bootstrap.cluster.x-k8s.io/v1alpha1</span>
+    <span class="kw">kind:</span> <span class="val">IgnitionConfig</span>
+    <span class="kw">spec:</span>
+      <span class="kw">secretRef:</span>
+        <span class="kw">name:</span> <span class="val">worker-ignition</span>
+
+  <span class="kw">machineTemplate:</span>
+    <span class="kw">labels:</span>
+      <span class="kw">node-role.kubernetes.io/worker:</span> <span class="str">""</span>
+
+  <span class="kw">priority:</span> <span class="val">50</span>
+  <span class="kw">gracefulShutdownTimeout:</span> <span class="str">5m</span>
+  <span class="kw">nodeDrainTimeout:</span> <span class="str">5m</span>
+  <span class="kw">killSwitch:</span> <span class="val">false</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>Lifecycle Flow</h2>
+<ol style="margin-left:1.5rem;">
+  <li>Pre-requisites already running: cert-manager, CAPI, capi-bootstrap-ignition, 5-Spot, CAPLV</li>
+  <li>CRs already created: <strong>Cluster</strong> (<code>spot</code>), <strong>LibvirtCluster</strong> (<code>spot</code>), <strong>LibvirtHost</strong> (<code>laptop</code>), <strong>Secret</strong> (<code>worker-ignition</code>)</li>
+  <li>User creates a <strong>ScheduledMachine</strong></li>
+  <li>5-Spot evaluates the schedule &mdash; when in-window, it creates a <strong>LibvirtMachine</strong>, <strong>IgnitionConfig</strong>, and CAPI <strong>Machine</strong></li>
+  <li>CAPLV connects to the <strong>LibvirtHost</strong> over SSH, clones the base image, creates the VM domain</li>
+  <li>The VM boots with Ignition config and joins the cluster as a worker node</li>
+  <li>When the schedule window closes, 5-Spot drains the node and deletes all created resources</li>
+  <li>CAPLV destroys the VM domain and cleans up the disk</li>
+</ol>
+
+<h2>Quick Commands</h2>
+<div class="card">
+<pre><code><span class="cmt"># Create the scheduled worker</span>
+./demo-create-worker.sh
+
+<span class="cmt"># Watch it come up</span>
+kubectl get scheduledmachines -w
+
+<span class="cmt"># Check all resources</span>
+kubectl get cluster,libvirtcluster,libvirthost,libvirtmachine,machine,ignitionconfig,scheduledmachine
+
+<span class="cmt"># Stack status</span>
+./deploy.sh status
+
+<span class="cmt"># Tear down the worker</span>
+kubectl delete scheduledmachine spot-worker-01</code></pre>
+</div>
+
+</body>
+</html>
