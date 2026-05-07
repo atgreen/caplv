@@ -24,7 +24,7 @@ import (
 )
 
 // NetworkConfig holds the parameters needed to generate static network
-// configuration for an OpenShift worker node using OVN-Kubernetes.
+// configuration for an OpenShift worker node.
 type NetworkConfig struct {
 	// Addresses in CIDR notation, e.g. ["192.168.122.100/24"]
 	Addresses []string
@@ -36,15 +36,20 @@ type NetworkConfig struct {
 	DNSSearch []string
 }
 
-// InjectStaticNetwork merges OVN-compatible static network configuration
-// into an ignition config. On OpenShift with OVN-Kubernetes, the physical
-// NIC is enslaved to an OVS bridge (br-ex), so the static IP must be
-// configured on br-ex rather than the physical interface.
+// InjectStaticNetwork merges static network configuration into an ignition
+// config by writing an NMConnection file for the physical NIC (enp1s0).
 //
-// OVN's configure-ovs script creates its own br-ex connection profile,
-// overriding any NMConnection file we drop in. To work around this, we
-// inject a oneshot systemd unit that waits for br-ex to appear, then
-// reconfigures the existing OVN-managed connection with static addressing.
+// On OpenShift with OVN-Kubernetes, the configure-ovs.sh script runs at
+// boot and migrates the physical NIC's configuration to an OVS bridge
+// (br-ex). If the physical NIC already has a static IP, configure-ovs
+// preserves it on br-ex. This is the same mechanism the Assisted Installer
+// and agent-based installer use for bare metal nodes with static IPs.
+//
+// By setting method=manual on enp1s0 before any services start, we ensure:
+//   - NetworkManager never requests a DHCP lease
+//   - nodeip-configuration detects the correct static IP
+//   - configure-ovs migrates the static config to br-ex
+//   - CRI-O and kubelet get the right IP from the start
 func InjectStaticNetwork(ignitionData []byte, net NetworkConfig) ([]byte, error) {
 	if len(net.Addresses) == 0 {
 		return ignitionData, nil
@@ -71,110 +76,50 @@ func InjectStaticNetwork(ignitionData []byte, net NetworkConfig) ([]byte, error)
 		return nil, fmt.Errorf("unsupported ignition version: %s", version)
 	}
 
-	script := generateStaticIPScript(net)
-	injectFile(config,
-		"/usr/local/bin/caplv-static-ip.sh",
-		"data:,"+url.PathEscape(script), 0o755, isV3)
+	// Default DNS to the gateway if not explicitly set.
+	if len(net.DNSServers) == 0 && net.Gateway != "" {
+		net.DNSServers = []string{net.Gateway}
+	}
 
-	unit := generateStaticIPUnit()
-	injectSystemdUnit(config, "caplv-static-ip.service", unit, true, isV3)
+	nmConn := generateNMConnection(net)
+	injectFile(config,
+		"/etc/NetworkManager/system-connections/enp1s0.nmconnection",
+		"data:,"+url.PathEscape(nmConn), 0o600, isV3)
 
 	return json.Marshal(config)
 }
 
-// generateStaticIPScript creates a shell script that modifies the
-// OVN-managed br-ex connection to use static addressing.
-func generateStaticIPScript(net NetworkConfig) string {
+// generateNMConnection creates a NetworkManager keyfile that configures
+// enp1s0 with a static IP. configure-ovs.sh will migrate this to br-ex.
+func generateNMConnection(net NetworkConfig) string {
 	var b strings.Builder
 
-	b.WriteString("#!/bin/bash\n")
-	b.WriteString("# CAPLV: Reconfigure br-ex with static IP after OVN setup.\n")
-	b.WriteString("# Wait for br-ex to be created by OVN's configure-ovs.\n")
-	b.WriteString("for i in $(seq 1 120); do\n")
-	b.WriteString("  if nmcli -t -f NAME con show --active 2>/dev/null | grep -q ovs-if-br-ex; then\n")
-	b.WriteString("    break\n")
-	b.WriteString("  fi\n")
-	b.WriteString("  sleep 2\n")
-	b.WriteString("done\n\n")
+	b.WriteString("[connection]\n")
+	b.WriteString("id=enp1s0\n")
+	b.WriteString("type=ethernet\n")
+	b.WriteString("interface-name=enp1s0\n")
+	b.WriteString("autoconnect=true\n")
+	b.WriteString("autoconnect-priority=1\n")
+	b.WriteString("\n")
 
-	b.WriteString("# Find the OVN-managed br-ex connection name\n")
-	b.WriteString("BREX_CON=$(nmcli -t -f NAME con show | grep -m1 ovs-if-br-ex)\n")
-	b.WriteString("if [ -z \"$BREX_CON\" ]; then\n")
-	b.WriteString("  echo 'caplv-static-ip: br-ex connection not found, exiting'\n")
-	b.WriteString("  exit 1\n")
-	b.WriteString("fi\n\n")
-
-	b.WriteString("# Reconfigure with static IP\n")
-	b.WriteString("nmcli con mod \"$BREX_CON\" ipv4.method manual \\\n")
-
-	addrs := make([]string, len(net.Addresses))
-	copy(addrs, net.Addresses)
-	b.WriteString(fmt.Sprintf("  ipv4.addresses \"%s\"", strings.Join(addrs, ",")))
-
+	b.WriteString("[ipv4]\n")
+	b.WriteString("method=manual\n")
+	for i, addr := range net.Addresses {
+		b.WriteString(fmt.Sprintf("address%d=%s\n", i+1, addr))
+	}
 	if net.Gateway != "" {
-		b.WriteString(fmt.Sprintf(" \\\n  ipv4.gateway \"%s\"", net.Gateway))
+		b.WriteString(fmt.Sprintf("gateway=%s\n", net.Gateway))
 	}
 	if len(net.DNSServers) > 0 {
-		b.WriteString(fmt.Sprintf(" \\\n  ipv4.dns \"%s\"", strings.Join(net.DNSServers, ",")))
+		b.WriteString(fmt.Sprintf("dns=%s;\n", strings.Join(net.DNSServers, ";")))
 	}
 	if len(net.DNSSearch) > 0 {
-		b.WriteString(fmt.Sprintf(" \\\n  ipv4.dns-search \"%s\"", strings.Join(net.DNSSearch, ",")))
+		b.WriteString(fmt.Sprintf("dns-search=%s;\n", strings.Join(net.DNSSearch, ";")))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	b.WriteString("# Apply the changes\n")
-	b.WriteString("nmcli con up \"$BREX_CON\"\n")
-	b.WriteString("echo \"caplv-static-ip: br-ex configured with static IP\"\n")
+	b.WriteString("[ipv6]\n")
+	b.WriteString("method=disabled\n")
 
 	return b.String()
-}
-
-// generateStaticIPUnit creates a systemd unit that runs the static IP
-// script after the network is online.
-func generateStaticIPUnit() string {
-	return `[Unit]
-Description=CAPLV: Configure br-ex with static IP
-After=NetworkManager.service ovs-configuration.service
-Wants=NetworkManager.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/caplv-static-ip.sh
-RemainAfterExit=true
-
-[Install]
-WantedBy=multi-user.target
-`
-}
-
-// injectSystemdUnit adds a systemd unit to the ignition config.
-func injectSystemdUnit(config map[string]any, name, contents string, enabled, isV3 bool) {
-	systemd, ok := config["systemd"].(map[string]any)
-	if !ok {
-		systemd = map[string]any{}
-		config["systemd"] = systemd
-	}
-
-	units, _ := systemd["units"].([]any)
-
-	// Remove any existing unit with the same name.
-	filtered := make([]any, 0, len(units))
-	for _, u := range units {
-		um, ok := u.(map[string]any)
-		if ok {
-			if n, _ := um["name"].(string); n == name {
-				continue
-			}
-		}
-		filtered = append(filtered, u)
-	}
-
-	entry := map[string]any{
-		"name":     name,
-		"enabled":  enabled,
-		"contents": contents,
-	}
-
-	filtered = append(filtered, entry)
-	systemd["units"] = filtered
 }

@@ -218,6 +218,44 @@
 </div>
 
 <!-- ============================================================ -->
+<h2>Static IP Networking with OVN-Kubernetes</h2>
+<p>On OpenShift clusters using OVN-Kubernetes, the physical NIC is enslaved
+   to an OVS bridge (<code>br-ex</code>) during boot. The
+   <code>configure-ovs.sh</code> script handles this migration: if the
+   physical NIC already has a static IP, it preserves it on
+   <code>br-ex</code>. This is the same mechanism the Assisted Installer
+   uses for bare metal nodes.</p>
+
+<p>The <code>worker-ignition</code> secret is shared by all workers &mdash;
+   it contains the generic Ignition config fetched from the cluster's
+   Machine Config Server. At provisioning time, CAPLV merges per-VM
+   configuration into a copy of this shared Ignition before booting the VM.
+   For static networking, CAPLV injects an NMConnection file that configures
+   the physical NIC with <code>method=manual</code> before any services
+   start, so DHCP is never used.</p>
+
+<div class="card">
+<div class="card-title">Per-VM Ignition injection (done by CAPLV controller)</div>
+<pre><code><span class="cmt"># From the shared worker-ignition secret, CAPLV injects:</span>
+<span class="val">/etc/hostname</span>                           <span class="cmt">&larr; VM hostname</span>
+<span class="val">/etc/systemd/system/kubelet.service.d/
+  90-provider-id.conf</span>                   <span class="cmt">&larr; CAPI provider ID</span>
+<span class="val">/etc/NetworkManager/system-connections/
+  enp1s0.nmconnection</span>                  <span class="cmt">&larr; static IP for physical NIC</span></code></pre>
+</div>
+
+<div class="card">
+<div class="card-title">Boot sequence for static IP assignment</div>
+<pre><code><span class="cmt">1. Ignition writes enp1s0.nmconnection (method=manual, no DHCP)</span>
+<span class="cmt">2. NetworkManager starts, enp1s0 gets the static IP immediately</span>
+<span class="cmt">3. nodeip-configuration detects the static IP (no DHCP race)</span>
+<span class="cmt">4. MCO pulls images, configures the node, reboots</span>
+<span class="cmt">5. configure-ovs.sh migrates enp1s0's static IP to br-ex</span>
+<span class="cmt">6. CRI-O and kubelet start with the correct IP on br-ex</span>
+<span class="cmt">7. Node joins the cluster as a worker</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
 <h2>Lifecycle Flow</h2>
 <ol style="margin-left:1.5rem;">
   <li>Pre-requisites already running: cert-manager, CAPI, capi-bootstrap-ignition, 5-Spot, CAPLV</li>
