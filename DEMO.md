@@ -80,6 +80,25 @@ Configure via environment variables:
 | `DEMO_FIRMWARE` | `/usr/share/OVMF/OVMF_CODE.fd` | OVMF firmware path on hypervisor |
 | `DEMO_NVRAM` | `/usr/share/OVMF/OVMF_VARS.fd` | NVRAM template path on hypervisor |
 
+> **Note on the `Cluster` status.** After this step the `Cluster` will report
+> `ControlPlaneInitialized=False` with the message "Waiting for the first
+> control plane machine to have status.nodeRef set". This is **expected** and
+> not blocking. In this demo the actual Kubernetes control plane is the
+> existing SNO cluster (externally managed); CAPLV only schedules workers,
+> so no CAPI control-plane Machine is ever created. CAPI v1.9 does not gate
+> worker provisioning on this condition. The signal that matters is
+> `InfrastructureReady` on the `Cluster` (driven by the `LibvirtCluster`
+> controller TCP-dialing `controlPlaneEndpoint`):
+>
+> ```bash
+> kubectl get cluster ${DEMO_CLUSTER:-spot} \
+>   -o jsonpath='{.status.infrastructureReady}{"\n"}'
+> # should print: true
+> ```
+>
+> If that returns empty/false, check that `DEMO_CP_HOST` resolves and
+> port 6443 is reachable from the management cluster.
+
 ### 4. Create the worker-ignition secret
 
 This secret is created once and shared by all workers. It contains the
