@@ -7,6 +7,17 @@ resources:
 - bases/infrastructure.cluster.x-k8s.io_libvirtmachines.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
+# CAPI contract version labels — declare which provider API version implements
+# each CAPI contract. Required by the v1beta2 conversion webhook to resolve
+# infrastructure references. See:
+# https://cluster-api.sigs.k8s.io/developer/providers/contracts/overview.html#api-version-labels
+labels:
+- pairs:
+    cluster.x-k8s.io/v1beta1: v1alpha1
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  includeSelectors: false
+  includeTemplates: false
+
 patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
