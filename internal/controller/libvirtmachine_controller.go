@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -50,6 +52,7 @@ const (
 	hostNotReadyRequeueInterval      = 30 * time.Second
 	bootstrapNotReadyRequeueInterval = 10 * time.Second
 	cleanupStalledRequeueInterval    = 60 * time.Second
+	nodeJoinRequeueInterval          = 15 * time.Second
 	memoryMBToKBMultiplier           = 1024
 )
 
@@ -75,7 +78,7 @@ type LibvirtMachineReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;patch;update;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -331,7 +334,137 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 	log.Info("Machine infrastructure ready", "providerID", providerID)
 
+	// Apply user-declared Node labels and annotations once kubelet has
+	// registered the Node. Does not block readiness — the infra is ready
+	// when the domain is up; labelling is a follow-on step.
+	return r.reconcileNodeLabels(ctx, libvirtMachine, machineScope.DomainName())
+}
+
+// reconcileNodeLabels applies spec.nodeLabels and spec.nodeAnnotations to the
+// Kubernetes Node that backs this LibvirtMachine. The reconciler runs from
+// the controller's own identity (not kubelet), so NodeRestriction does not
+// apply and arbitrary label/annotation keys are accepted.
+//
+// Ownership: CAPLV owns only the keys it has applied, tracked via the
+// ManagedNodeLabelsAnnotation / ManagedNodeAnnotationsAnnotation annotations
+// on the Node. Keys that disappear from spec on a subsequent reconcile are
+// removed; admin-applied keys CAPLV never set are left untouched.
+func (r *LibvirtMachineReconciler) reconcileNodeLabels(
+	ctx context.Context,
+	libvirtMachine *infrav1.LibvirtMachine,
+	nodeName string,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	desiredLabels := libvirtMachine.Spec.NodeLabels
+	desiredAnnotations := libvirtMachine.Spec.NodeAnnotations
+
+	if len(desiredLabels) == 0 && len(desiredAnnotations) == 0 {
+		// Nothing to do; clear any prior condition so observers don't see
+		// a stale signal after the user removes all keys.
+		apimeta.RemoveStatusCondition(&libvirtMachine.Status.Conditions, infrav1.NodeLabelledCondition)
+		return ctrl.Result{}, nil
+	}
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+				Type:               infrav1.NodeLabelledCondition,
+				Status:             metav1.ConditionFalse,
+				Reason:             infrav1.ReasonNodeNotJoined,
+				Message:            fmt.Sprintf("waiting for Node %q to join the cluster", nodeName),
+				ObservedGeneration: libvirtMachine.Generation,
+			})
+			log.Info("Node not yet joined, will retry node labelling", "node", nodeName)
+			return ctrl.Result{RequeueAfter: nodeJoinRequeueInterval}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get Node %q: %w", nodeName, err)
+	}
+
+	patchBase := client.MergeFrom(node.DeepCopy())
+
+	prevLabelKeys := parseManagedKeys(node.Annotations[infrav1.ManagedNodeLabelsAnnotation])
+	prevAnnotationKeys := parseManagedKeys(node.Annotations[infrav1.ManagedNodeAnnotationsAnnotation])
+
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+	for _, k := range prevLabelKeys {
+		if _, keep := desiredLabels[k]; !keep {
+			delete(node.Labels, k)
+		}
+	}
+	for k, v := range desiredLabels {
+		node.Labels[k] = v
+	}
+
+	if node.Annotations == nil {
+		node.Annotations = map[string]string{}
+	}
+	for _, k := range prevAnnotationKeys {
+		if _, keep := desiredAnnotations[k]; !keep {
+			delete(node.Annotations, k)
+		}
+	}
+	for k, v := range desiredAnnotations {
+		node.Annotations[k] = v
+	}
+
+	if len(desiredLabels) > 0 {
+		node.Annotations[infrav1.ManagedNodeLabelsAnnotation] = formatManagedKeys(desiredLabels)
+	} else {
+		delete(node.Annotations, infrav1.ManagedNodeLabelsAnnotation)
+	}
+	if len(desiredAnnotations) > 0 {
+		node.Annotations[infrav1.ManagedNodeAnnotationsAnnotation] = formatManagedKeys(desiredAnnotations)
+	} else {
+		delete(node.Annotations, infrav1.ManagedNodeAnnotationsAnnotation)
+	}
+
+	if err := r.Patch(ctx, node, patchBase); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to patch Node %q: %w", nodeName, err)
+	}
+
+	log.Info("Applied node labels and annotations",
+		"node", nodeName, "labels", len(desiredLabels), "annotations", len(desiredAnnotations))
+
+	apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+		Type:               infrav1.NodeLabelledCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             infrav1.ReasonNodeLabelled,
+		Message:            "Node labels and annotations applied",
+		ObservedGeneration: libvirtMachine.Generation,
+	})
+
 	return ctrl.Result{}, nil
+}
+
+// formatManagedKeys serialises the keys of m as a sorted comma-separated
+// list for storage in a Node annotation. Sorting keeps the value stable
+// across reconciles so we don't churn the Node when spec doesn't change.
+func formatManagedKeys(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
+// parseManagedKeys reverses formatManagedKeys. An empty input yields nil.
+func parseManagedKeys(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ensureBootstrapData checks that bootstrap data is available.

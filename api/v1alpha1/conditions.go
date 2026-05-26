@@ -26,6 +26,7 @@ const (
 	ArtifactsCreatedCondition        = "ArtifactsCreated"
 	BootstrapDataReadyCondition      = "BootstrapDataReady"
 	CleanupStalledCondition          = "CleanupStalled"
+	NodeLabelledCondition            = "NodeLabelled"
 
 	// Reasons — terminal
 	ReasonBaseImageNotFound    = "BaseImageNotFound"
@@ -41,12 +42,14 @@ const (
 	// Reasons — waiting
 	ReasonBootstrapDataNotReady = "BootstrapDataNotReady"
 	ReasonHostNotReady          = "HostNotReady"
+	ReasonNodeNotJoined         = "NodeNotJoined"
 
 	// Reasons — success
 	ReasonConnectionSucceeded = "ConnectionSucceeded"
 	ReasonProvisioned         = "Provisioned"
 	ReasonArtifactsReady      = "ArtifactsReady"
 	ReasonClusterReady        = "ClusterReady"
+	ReasonNodeLabelled        = "NodeLabelled"
 
 	// Reasons — cleanup
 	ReasonCleanupStalled   = "CleanupStalled"
@@ -55,4 +58,11 @@ const (
 	// Finalizers
 	MachineFinalizer = "infrastructure.cluster.x-k8s.io/libvirt-machine"
 	HostFinalizer    = "infrastructure.cluster.x-k8s.io/libvirt-host"
+
+	// Node annotations CAPLV writes to track the label/annotation keys it
+	// manages on a Node. Used to compute a clean removal when keys disappear
+	// from spec.nodeLabels / spec.nodeAnnotations — admin-applied keys CAPLV
+	// never set are left untouched.
+	ManagedNodeLabelsAnnotation      = "infrastructure.cluster.x-k8s.io/libvirt-managed-labels"
+	ManagedNodeAnnotationsAnnotation = "infrastructure.cluster.x-k8s.io/libvirt-managed-annotations"
 )

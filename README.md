@@ -320,6 +320,73 @@ libvirt storage pool when the VM is provisioned, and tears both down when
 the VM is deleted. RAM is only consumed while the VM exists. The host's
 persistent storage is never touched.
 
+### Node labels and annotations
+
+`LibvirtMachine.spec.nodeLabels` and `LibvirtMachine.spec.nodeAnnotations`
+apply arbitrary labels and annotations to the Kubernetes `Node` object
+that backs the VM, once kubelet has registered it with the cluster:
+
+```yaml
+spec:
+  # ...existing fields...
+  nodeLabels:
+    node-role.kubernetes.io/app: ""
+    k8s.ovn.org/egress-assignable: ""
+    dynatrace: "true"
+    aqua: "true"
+  nodeAnnotations:
+    example.com/owner: "platform-team"
+```
+
+Unlike the existing CAPI `Machine.spec.nodeLabels` field (and `kubelet
+--node-labels` / `K0sWorkerConfig.spec.args` / ignition kubelet drop-ins),
+this is **not subject to the NodeRestriction admission allow-list**.
+NodeRestriction polices labels self-set by kubelet (`system:nodes:<name>`)
+and CAPI mirrors the same allow-list on its own `nodeLabels` field. CAPLV
+instead patches the `Node` from the controller's own identity after
+kubelet registration, so arbitrary keys like `dynatrace` or
+`k8s.ovn.org/egress-assignable` are accepted.
+
+**Ownership.** CAPLV owns only the keys it has applied. It tracks them
+via two annotations it writes onto the `Node` itself:
+
+- `infrastructure.cluster.x-k8s.io/libvirt-managed-labels`
+- `infrastructure.cluster.x-k8s.io/libvirt-managed-annotations`
+
+On each reconcile, keys that have disappeared from spec are removed from
+the `Node`; admin-applied keys CAPLV never set are left untouched. The
+result of the patch is visible on
+`status.conditions[?(@.type=="NodeLabelled")]`:
+
+| Status | Reason          | Meaning                                                |
+| ------ | --------------- | ------------------------------------------------------ |
+| True   | `NodeLabelled`  | All declared keys are present on the Node              |
+| False  | `NodeNotJoined` | Waiting for kubelet to register the Node (retried 15s) |
+
+The condition is set only when at least one of `nodeLabels` /
+`nodeAnnotations` is non-empty; clearing both removes the condition. Node
+labelling does **not** block `status.ready` — infrastructure is reported
+ready as soon as the domain is running, and the patch is applied as a
+follow-on step.
+
+When using 5-Spot, put the fields inside `infrastructureSpec.spec` and
+they pass through to the underlying `LibvirtMachine`:
+
+```yaml
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+spec:
+  # ...
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+    kind: LibvirtMachine
+    spec:
+      # ...VM config...
+      nodeLabels:
+        k8s.ovn.org/egress-assignable: ""
+        dynatrace: "true"
+```
+
 ### MachineHealthCheck (recommended)
 
 When the designed deletion path is followed (5-Spot → CAPI → CAPLV),

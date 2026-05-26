@@ -258,6 +258,23 @@ type LibvirtMachineSpec struct {
 	// Set by the controller after the domain is created.
 	// +optional
 	ProviderID *string `json:"providerID,omitempty"`
+
+	// nodeLabels are labels to apply to the Kubernetes Node once kubelet
+	// registers it with the cluster. Unlike CAPI's Machine.spec.nodeLabels
+	// (which enforces a prefix allow-list to avoid bypassing NodeRestriction),
+	// CAPLV patches the Node directly from the controller's own identity, so
+	// arbitrary keys (e.g. "dynatrace", "aqua", "k8s.ovn.org/egress-assignable")
+	// are accepted. Keys removed from this map on a later update are removed
+	// from the Node; admin-applied labels that CAPLV never set are left
+	// untouched.
+	// +optional
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+
+	// nodeAnnotations are annotations to apply to the Kubernetes Node once
+	// kubelet registers it with the cluster. Same ownership and removal
+	// semantics as nodeLabels.
+	// +optional
+	NodeAnnotations map[string]string `json:"nodeAnnotations,omitempty"`
 }
 
 // LibvirtMachineStatus defines the observed state of LibvirtMachine.
