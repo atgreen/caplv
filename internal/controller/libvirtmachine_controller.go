@@ -564,8 +564,9 @@ func (r *LibvirtMachineReconciler) reconcileRootDisk(ctx context.Context, rc *re
 			return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool")
 		}
 		if !poolExists {
-			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath)
-			if err := libvirtClient.CreateTmpfsPool(ctx, ephPoolName, ephPoolPath); err != nil {
+			ephPoolSize := libvirtMachine.Spec.RootDisk.EphemeralPoolSize
+			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath, "size", ephPoolSize)
+			if err := libvirtClient.CreateTmpfsPool(ctx, ephPoolName, ephPoolPath, ephPoolSize); err != nil {
 				log.Error(err, "Failed to create ephemeral tmpfs pool", "pool", ephPoolName)
 				return r.handleLibvirtError(libvirtMachine, err, "creating ephemeral pool")
 			}

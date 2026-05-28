@@ -256,6 +256,14 @@ spec:
                       storage is never touched and RAM is only consumed while the VM exists.
                       Requires storagePool to differ from baseImagePool.
                     type: boolean
+                  ephemeralPoolSize:
+                    description: |-
+                      ephemeralPoolSize caps the RAM the ephemeral tmpfs mount may consume.
+                      Accepts tmpfs `size=` syntax: a percentage of physical RAM (e.g. "80%")
+                      or an absolute size (e.g. "16G"). When unset, the kernel default (50%
+                      of physical RAM) applies. Only meaningful when ephemeralPool is true.
+                    pattern: ^([1-9][0-9]?|100)%$|^[1-9][0-9]*[KMGTkmgt]?$
+                    type: string
                   size:
                     anyOf:
                     - type: integer

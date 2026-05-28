@@ -304,12 +304,18 @@ func (c *VirshClient) PoolExists(ctx context.Context, name string) (bool, error)
 
 // CreateTmpfsPool creates a tmpfs-backed storage pool, mounts it, and starts it.
 // Uses sudo for mkdir and mount (requires sudoers entry for the service account).
-func (c *VirshClient) CreateTmpfsPool(ctx context.Context, name, path string) error {
+// If size is non-empty it is passed as the tmpfs `size=` option (e.g. "80%", "16G");
+// when empty the kernel default (50% of physical RAM) applies.
+func (c *VirshClient) CreateTmpfsPool(ctx context.Context, name, path, size string) error {
 	// Create directory and mount tmpfs (requires sudo).
 	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", path)); err != nil {
 		return fmt.Errorf("mkdir failed: %w", err)
 	}
-	if err := c.runSSH(ctx, fmt.Sprintf("sudo mount -t tmpfs tmpfs %s", path)); err != nil {
+	mountCmd := fmt.Sprintf("sudo mount -t tmpfs tmpfs %s", path)
+	if size != "" {
+		mountCmd = fmt.Sprintf("sudo mount -t tmpfs -o size=%s tmpfs %s", size, path)
+	}
+	if err := c.runSSH(ctx, mountCmd); err != nil {
 		return fmt.Errorf("tmpfs mount failed: %w", err)
 	}
 

@@ -117,6 +117,14 @@ type RootDiskSpec struct {
 	// +optional
 	EphemeralPool bool `json:"ephemeralPool,omitempty"`
 
+	// ephemeralPoolSize caps the RAM the ephemeral tmpfs mount may consume.
+	// Accepts tmpfs `size=` syntax: a percentage of physical RAM (e.g. "80%")
+	// or an absolute size (e.g. "16G"). When unset, the kernel default (50%
+	// of physical RAM) applies. Only meaningful when ephemeralPool is true.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]?|100)%$|^[1-9][0-9]*[KMGTkmgt]?$`
+	EphemeralPoolSize string `json:"ephemeralPoolSize,omitempty"`
+
 	// bus is the disk bus type.
 	// +optional
 	// +kubebuilder:default="virtio"

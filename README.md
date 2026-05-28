@@ -127,6 +127,7 @@ Grant restricted sudo for tmpfs and file operations only:
 # /etc/sudoers.d/caplv
 caplv ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/caplv/*
 caplv ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs tmpfs /run/caplv/*
+caplv ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs -o size=* tmpfs /run/caplv/*
 caplv ALL=(root) NOPASSWD: /usr/bin/umount /run/caplv/*
 caplv ALL=(root) NOPASSWD: /usr/bin/rmdir /run/caplv/*
 caplv ALL=(root) NOPASSWD: /usr/bin/tee /run/caplv/*
@@ -313,12 +314,17 @@ rootDisk:
   baseImagePool: "default"       # persistent pool with pre-staged base image
   baseImage: "rhcos.qcow2"
   ephemeralPool: true
+  ephemeralPoolSize: "80%"       # optional cap on tmpfs RAM (default: kernel's 50%)
 ```
 
 **No host setup required.** CAPLV creates a per-machine tmpfs mount and
 libvirt storage pool when the VM is provisioned, and tears both down when
 the VM is deleted. RAM is only consumed while the VM exists. The host's
 persistent storage is never touched.
+
+`ephemeralPoolSize` accepts tmpfs `size=` syntax: a percentage of physical
+RAM (`"80%"`) or an absolute size (`"16G"`). When unset, the kernel's
+default applies (50% of physical RAM per mount).
 
 ### Node labels and annotations
 
@@ -484,6 +490,7 @@ service account. The account is designed with minimal privileges:
 | `virsh nodeinfo/dominfo/version` | libvirt group | Read-only host and domain queries |
 | `mkdir -p /run/caplv/*` | root | `sudo` — create tmpfs mount point |
 | `mount -t tmpfs tmpfs /run/caplv/*` | root | `sudo` — mount ephemeral storage |
+| `mount -t tmpfs -o size=* tmpfs /run/caplv/*` | root | `sudo` — mount with size cap (`ephemeralPoolSize`) |
 | `umount /run/caplv/*` | root | `sudo` — unmount on cleanup |
 | `rmdir /run/caplv/*` | root | `sudo` — remove mount point |
 | `tee /run/caplv/*` | root | `sudo` — write ignition config |

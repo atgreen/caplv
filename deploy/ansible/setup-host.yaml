@@ -103,6 +103,7 @@
           # CAPLV service account — restricted sudo for tmpfs and file operations.
           {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/caplv/*
           {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs tmpfs /run/caplv/*
+          {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/mount -t tmpfs -o size=* tmpfs /run/caplv/*
           {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/umount /run/caplv/*
           {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/rmdir /run/caplv/*
           {{ caplv_user }} ALL=(root) NOPASSWD: /usr/bin/tee /run/caplv/*
