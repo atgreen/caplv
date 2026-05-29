@@ -2,10 +2,12 @@
 
 CAPLV is an *EXPERIMENTAL* [Cluster API](https://cluster-api.sigs.k8s.io/)
 infrastructure provider that provisions KVM virtual machines on libvirt
-hosts. It is built exclusively for
-[5-Spot](https://github.com/finos/5-spot), which schedules OpenShift worker
-nodes on and off physical RHEL/KVM infrastructure based on time-of-day
-rules.
+hosts. It works standalone as a plain CAPI infrastructure provider —
+create `LibvirtMachine` and `Machine` resources directly to bring up
+workers — and pairs naturally with
+[5-Spot](https://github.com/finos/5-spot), which schedules OpenShift
+worker nodes on and off physical RHEL/KVM infrastructure based on
+time-of-day rules.
 
 The target hosts are machines with incumbent workloads — DR standby
 systems or servers with predictable load schedules that have idle
