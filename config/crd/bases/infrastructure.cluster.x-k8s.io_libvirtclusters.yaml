@@ -51,6 +51,93 @@ spec:
           spec:
             description: spec defines the desired state of LibvirtCluster.
             properties:
+              bootArtifacts:
+                description: |-
+                  bootArtifacts, when set, switches first-boot ignition delivery from
+                  QEMU fw_cfg to libvirt direct-kernel-boot plus a virtio-blk ignition
+                  disk. The kernel's qemu_fw_cfg driver does O(n²) offset reads, which
+                  burns seconds of wall-clock time for multi-MB ignition payloads.
+                properties:
+                  hostPath:
+                    description: |-
+                      HostPath is the directory on each libvirt host where kernel/initramfs are cached.
+                      Files land at <HostPath>/<sha256>/vmlinuz and <HostPath>/<sha256>/initramfs.img.
+                    type: string
+                  kernelArgs:
+                    description: |-
+                      KernelArgs is the cmdline appended to the direct-boot kernel. The user is
+                      responsible for setting an ignition.config.url that reads from the virtio-blk
+                      ignition disk (serial=ignition), e.g.
+                        "ignition.platform.id=metal ignition.config.url=oem:/dev/disk/by-id/virtio-ignition console=ttyS0"
+                    minLength: 1
+                    type: string
+                  source:
+                    description: Source describes where to fetch the kernel and initramfs
+                      from.
+                    properties:
+                      https:
+                        description: HTTPSBootArtifactsSource fetches kernel+initramfs
+                          over HTTPS.
+                        properties:
+                          initramfsSHA256:
+                            type: string
+                          initramfsURL:
+                            type: string
+                          kernelSHA256:
+                            type: string
+                          kernelURL:
+                            type: string
+                        required:
+                        - initramfsURL
+                        - kernelURL
+                        type: object
+                      oci:
+                        description: OCIBootArtifactsSource fetches kernel+initramfs
+                          from an OCI artifact.
+                        properties:
+                          reference:
+                            type: string
+                        required:
+                        - reference
+                        type: object
+                      s3:
+                        description: S3BootArtifactsSource fetches kernel+initramfs
+                          from an S3-compatible store.
+                        properties:
+                          bucket:
+                            type: string
+                          endpoint:
+                            type: string
+                          initramfsKey:
+                            type: string
+                          initramfsSHA256:
+                            type: string
+                          kernelKey:
+                            type: string
+                          kernelSHA256:
+                            type: string
+                        required:
+                        - bucket
+                        - endpoint
+                        - initramfsKey
+                        - kernelKey
+                        type: object
+                      type:
+                        description: BootArtifactsSourceType enumerates supported
+                          artifact transports.
+                        enum:
+                        - HTTPS
+                        - OCI
+                        - S3
+                        type: string
+                    required:
+                    - type
+                    type: object
+                required:
+                - hostPath
+                - kernelArgs
+                - source
+                type: object
               controlPlaneEndpoint:
                 description: controlPlaneEndpoint represents the endpoint used to
                   communicate with the control plane.

@@ -156,6 +156,94 @@ func TestGenerateDomainXML_AdditionalDisks(t *testing.T) {
 	}
 }
 
+func TestGenerateDomainXML_DirectKernelBoot(t *testing.T) {
+	params := baseParams()
+	params.KernelPath = "/var/lib/caplv/boot/abc/vmlinuz"
+	params.InitrdPath = "/var/lib/caplv/boot/abc/initramfs.img"
+	params.KernelCmdline = "ignition.platform.id=metal console=ttyS0"
+	params.IgnitionPath = "/run/caplv/ignition/x.ign"
+
+	out, err := GenerateDomainXML(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out, "<kernel>/var/lib/caplv/boot/abc/vmlinuz</kernel>") {
+		t.Error("XML should contain <kernel> element with direct-boot kernel path")
+	}
+	if !strings.Contains(out, "<initrd>/var/lib/caplv/boot/abc/initramfs.img</initrd>") {
+		t.Error("XML should contain <initrd> element with direct-boot initramfs path")
+	}
+	if !strings.Contains(out, "<cmdline>ignition.platform.id=metal console=ttyS0</cmdline>") {
+		t.Error("XML should contain <cmdline> element with kernel args")
+	}
+	if strings.Contains(out, "<sysinfo") {
+		t.Error("XML should NOT contain <sysinfo> when direct kernel boot is active")
+	}
+	if !strings.Contains(out, "<serial>ignition</serial>") {
+		t.Error("XML should contain ignition virtio-blk disk with serial=ignition")
+	}
+	if !strings.Contains(out, `<source file="/run/caplv/ignition/x.ign"></source>`) {
+		t.Error("XML should reference the ignition file as a disk source")
+	}
+	// The ignition disk must be read-only.
+	idx := strings.Index(out, "<serial>ignition</serial>")
+	if idx < 0 || !strings.Contains(out[idx:], "<readonly></readonly>") {
+		t.Error("ignition disk should be <readonly/>")
+	}
+}
+
+func TestGenerateDomainXML_FwCfgIgnitionWithoutDirectKernel(t *testing.T) {
+	params := baseParams()
+	params.IgnitionPath = "/run/caplv/ignition/x.ign"
+
+	out, err := GenerateDomainXML(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out, `<sysinfo type="fwcfg">`) {
+		t.Error("fw_cfg sysinfo should be present when KernelPath is empty")
+	}
+	if strings.Contains(out, "<serial>ignition</serial>") {
+		t.Error("ignition virtio-blk disk should not be added when KernelPath is empty")
+	}
+	if strings.Contains(out, "<kernel>") {
+		t.Error("XML should not contain <kernel> element without direct-boot")
+	}
+}
+
+func TestGenerateDomainXML_DirectKernelDiskLetters(t *testing.T) {
+	params := baseParams()
+	params.KernelPath = "/k"
+	params.InitrdPath = "/i"
+	params.KernelCmdline = "x"
+	params.IgnitionPath = "/run/x.ign"
+	params.AdditionalDisks = []DiskParam{
+		{Path: "/data1.qcow2", Bus: "virtio"},
+		{Path: "/data2.qcow2", Bus: "virtio"},
+	}
+
+	out, err := GenerateDomainXML(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Root disk vda, ignition disk vdb, then additional disks vdc, vdd.
+	if !strings.Contains(out, `dev="vda"`) {
+		t.Error("expected root disk on vda")
+	}
+	if !strings.Contains(out, `dev="vdb"`) {
+		t.Error("expected ignition disk on vdb")
+	}
+	if !strings.Contains(out, `dev="vdc"`) {
+		t.Error("expected first additional disk on vdc")
+	}
+	if !strings.Contains(out, `dev="vdd"`) {
+		t.Error("expected second additional disk on vdd")
+	}
+}
+
 func TestGenerateDomainXML_DomainName(t *testing.T) {
 	params := baseParams()
 	params.Name = "my-special-domain"

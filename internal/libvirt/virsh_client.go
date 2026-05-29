@@ -477,6 +477,32 @@ func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []b
 	return nil
 }
 
+// RemoteFileExists returns true if path exists on the remote host.
+func (c *VirshClient) RemoteFileExists(ctx context.Context, path string) (bool, error) {
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return false, fmt.Errorf("ssh session: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	var stdout bytes.Buffer
+	session.Stdout = &stdout
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(fmt.Sprintf("test -e %s && echo present || echo missing", path))
+	}()
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGTERM)
+		return false, ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return false, fmt.Errorf("remote file check %s: %w", path, err)
+		}
+	}
+	return strings.TrimSpace(stdout.String()) == "present", nil
+}
+
 // DeleteRemoteFile deletes a file on the remote host via SSH.
 func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
 	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", path))

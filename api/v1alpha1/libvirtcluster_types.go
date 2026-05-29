@@ -26,6 +26,90 @@ type LibvirtClusterSpec struct {
 	// controlPlaneEndpoint represents the endpoint used to communicate with the control plane.
 	// +required
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint"`
+
+	// bootArtifacts, when set, switches first-boot ignition delivery from
+	// QEMU fw_cfg to libvirt direct-kernel-boot plus a virtio-blk ignition
+	// disk. The kernel's qemu_fw_cfg driver does O(n²) offset reads, which
+	// burns seconds of wall-clock time for multi-MB ignition payloads.
+	// +optional
+	BootArtifacts *BootArtifactsSpec `json:"bootArtifacts,omitempty"`
+}
+
+// BootArtifactsSpec configures direct-kernel-boot of first-boot artifacts.
+type BootArtifactsSpec struct {
+	// HostPath is the directory on each libvirt host where kernel/initramfs are cached.
+	// Files land at <HostPath>/<sha256>/vmlinuz and <HostPath>/<sha256>/initramfs.img.
+	// +kubebuilder:validation:Required
+	HostPath string `json:"hostPath"`
+
+	// KernelArgs is the cmdline appended to the direct-boot kernel. The user is
+	// responsible for setting an ignition.config.url that reads from the virtio-blk
+	// ignition disk (serial=ignition), e.g.
+	//   "ignition.platform.id=metal ignition.config.url=oem:/dev/disk/by-id/virtio-ignition console=ttyS0"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	KernelArgs string `json:"kernelArgs"`
+
+	// Source describes where to fetch the kernel and initramfs from.
+	// +kubebuilder:validation:Required
+	Source BootArtifactsSource `json:"source"`
+}
+
+// BootArtifactsSourceType enumerates supported artifact transports.
+type BootArtifactsSourceType string
+
+const (
+	BootArtifactsSourceHTTPS BootArtifactsSourceType = "HTTPS"
+	BootArtifactsSourceOCI   BootArtifactsSourceType = "OCI"
+	BootArtifactsSourceS3    BootArtifactsSourceType = "S3"
+)
+
+// BootArtifactsSource selects one transport-specific source.
+type BootArtifactsSource struct {
+	// +kubebuilder:validation:Enum=HTTPS;OCI;S3
+	// +kubebuilder:validation:Required
+	Type BootArtifactsSourceType `json:"type"`
+
+	// +optional
+	HTTPS *HTTPSBootArtifactsSource `json:"https,omitempty"`
+	// +optional
+	OCI *OCIBootArtifactsSource `json:"oci,omitempty"`
+	// +optional
+	S3 *S3BootArtifactsSource `json:"s3,omitempty"`
+}
+
+// HTTPSBootArtifactsSource fetches kernel+initramfs over HTTPS.
+type HTTPSBootArtifactsSource struct {
+	// +kubebuilder:validation:Required
+	KernelURL string `json:"kernelURL"`
+	// +kubebuilder:validation:Required
+	InitramfsURL string `json:"initramfsURL"`
+	// +optional
+	KernelSHA256 string `json:"kernelSHA256,omitempty"`
+	// +optional
+	InitramfsSHA256 string `json:"initramfsSHA256,omitempty"`
+}
+
+// OCIBootArtifactsSource fetches kernel+initramfs from an OCI artifact.
+type OCIBootArtifactsSource struct {
+	// +kubebuilder:validation:Required
+	Reference string `json:"reference"`
+}
+
+// S3BootArtifactsSource fetches kernel+initramfs from an S3-compatible store.
+type S3BootArtifactsSource struct {
+	// +kubebuilder:validation:Required
+	Endpoint string `json:"endpoint"`
+	// +kubebuilder:validation:Required
+	Bucket string `json:"bucket"`
+	// +kubebuilder:validation:Required
+	KernelKey string `json:"kernelKey"`
+	// +kubebuilder:validation:Required
+	InitramfsKey string `json:"initramfsKey"`
+	// +optional
+	KernelSHA256 string `json:"kernelSHA256,omitempty"`
+	// +optional
+	InitramfsSHA256 string `json:"initramfsSHA256,omitempty"`
 }
 
 // LibvirtClusterStatus defines the observed state of LibvirtCluster.

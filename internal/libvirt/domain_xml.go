@@ -30,13 +30,19 @@ type DomainXMLParams struct {
 	NVRAMPath        string
 	RootDiskPath     string
 	RootDiskBus      string
-	IgnitionPath     string // path to ignition JSON on host — delivered via fw_cfg
+	IgnitionPath     string // path to ignition JSON on host — delivered via fw_cfg, or via virtio-blk when KernelPath is set
 	BootstrapISOPath string // path to cloud-init NoCloud ISO — attached as cdrom
 	AdditionalDisks  []DiskParam
 	NetworkType      string // "bridge" or "network"
 	NetworkName      string
 	NetworkModel     string
 	MACAddress       string
+
+	// Direct kernel boot. When KernelPath is set, fw_cfg is bypassed and
+	// IgnitionPath is attached as a virtio-blk disk with serial=ignition.
+	KernelPath    string
+	InitrdPath    string
+	KernelCmdline string
 }
 
 // DiskParam defines an additional disk to attach to the domain.
@@ -86,6 +92,9 @@ type domainOS struct {
 	Type     domainOSType  `xml:"type"`
 	Loader   *domainLoader `xml:"loader,omitempty"`
 	NVRAM    *domainNVRAM  `xml:"nvram,omitempty"`
+	Kernel   string        `xml:"kernel,omitempty"`
+	Initrd   string        `xml:"initrd,omitempty"`
+	Cmdline  string        `xml:"cmdline,omitempty"`
 	Boot     domainBoot    `xml:"boot"`
 }
 
@@ -128,6 +137,7 @@ type domainDisk struct {
 	Driver   domainDiskDriver `xml:"driver"`
 	Source   domainDiskSource `xml:"source"`
 	Target   domainDiskTarget `xml:"target"`
+	Serial   string           `xml:"serial,omitempty"`
 	ReadOnly *struct{}        `xml:"readonly,omitempty"`
 }
 
@@ -228,8 +238,10 @@ func GenerateDomainXML(params DomainXMLParams) (string, error) {
 }
 
 // buildSysInfo creates the sysinfo element for fw_cfg ignition delivery.
+// When KernelPath is set, ignition is delivered via a virtio-blk disk and
+// fw_cfg is skipped to avoid the qemu_fw_cfg kernel driver's O(n²) reads.
 func buildSysInfo(params DomainXMLParams) *domainSysInfo {
-	if params.IgnitionPath == "" {
+	if params.IgnitionPath == "" || params.KernelPath != "" {
 		return nil
 	}
 	return &domainSysInfo{
@@ -271,6 +283,12 @@ func buildOS(params DomainXMLParams) domainOS {
 		}
 	}
 
+	if params.KernelPath != "" {
+		os.Kernel = params.KernelPath
+		os.Initrd = params.InitrdPath
+		os.Cmdline = params.KernelCmdline
+	}
+
 	return os
 }
 
@@ -303,6 +321,22 @@ func buildDevices(params DomainXMLParams) domainDevices {
 			Target:   domainDiskTarget{Dev: "sda", Bus: "sata"},
 			ReadOnly: &struct{}{},
 		})
+	}
+
+	// Direct-kernel-boot ignition disk: a small virtio-blk disk whose
+	// serial=ignition is matched by ignition.config.url=oem:/dev/disk/by-id/virtio-ignition.
+	if params.KernelPath != "" && params.IgnitionPath != "" {
+		dev := virtioDevName(diskDevLetterIdx, "virtio")
+		devices.Disks = append(devices.Disks, domainDisk{
+			Type:     "file",
+			Device:   "disk",
+			Driver:   domainDiskDriver{Name: "qemu", Type: "raw"},
+			Source:   domainDiskSource{File: params.IgnitionPath},
+			Target:   domainDiskTarget{Dev: dev, Bus: "virtio"},
+			Serial:   "ignition",
+			ReadOnly: &struct{}{},
+		})
+		diskDevLetterIdx++
 	}
 
 	// Additional disks.
