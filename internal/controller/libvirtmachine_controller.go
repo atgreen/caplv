@@ -18,10 +18,14 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
+	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -39,6 +43,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
+	"github.com/atgreen/caplv/internal/bootartifacts"
 	"github.com/atgreen/caplv/internal/ignition"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
@@ -66,10 +71,16 @@ type LibvirtMachineReconciler struct {
 	SSHClientFactory     SSHClientFactory
 	LibvirtClientFactory LibvirtClientFactory
 	ISOBuilder           iso.Builder
+	// BootArtifactsResolver fetches kernel+initramfs when a LibvirtCluster
+	// has spec.bootArtifacts set. Resolved bytes are cached in artifactCache
+	// keyed by a stable digest of the source spec.
+	BootArtifactsResolver bootartifacts.Resolver
 	// MaxConcurrentReconciles is the number of machines reconciled in parallel.
 	// Each reconcile targets a different libvirt host over its own SSH connection.
 	// Default: 50.
 	MaxConcurrentReconciles int
+
+	artifactCache sync.Map
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtmachines,verbs=get;list;watch;create;update;patch;delete
@@ -165,6 +176,7 @@ func (r *LibvirtMachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // reconcileCtx holds shared state passed between reconcileNormal sub-steps.
 type reconcileCtx struct {
 	libvirtMachine *infrav1.LibvirtMachine
+	libvirtCluster *infrav1.LibvirtCluster
 	machine        *clusterv1.Machine
 	libvirtHost    *infrav1.LibvirtHost
 	machineScope   *scope.MachineScope
@@ -184,6 +196,11 @@ type reconcileCtx struct {
 	// Populated by reconcileAdditionalDisks.
 	additionalDiskVolumes []string
 	additionalDiskParams  []libvirt.DiskParam
+
+	// Populated by reconcileBootArtifacts when spec.bootArtifacts is set.
+	kernelPath    string
+	initrdPath    string
+	kernelCmdline string
 }
 
 // reconcileNormal handles creating and configuring the libvirt domain.
@@ -261,6 +278,7 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 	rc := &reconcileCtx{
 		libvirtMachine:   libvirtMachine,
+		libvirtCluster:   libvirtCluster,
 		machine:          machine,
 		libvirtHost:      libvirtHost,
 		machineScope:     machineScope,
@@ -292,6 +310,11 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 
 	// Step 3: Create additional disks.
 	if err := r.reconcileAdditionalDisks(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 3.5: Stage direct-boot kernel/initramfs on the host if requested.
+	if err := r.reconcileBootArtifacts(ctx, rc); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -735,6 +758,103 @@ func (r *LibvirtMachineReconciler) reconcileAdditionalDisks(ctx context.Context,
 	return nil
 }
 
+// reconcileBootArtifacts fetches kernel+initramfs and stages them on the
+// libvirt host when LibvirtCluster.Spec.BootArtifacts is set. Cached bytes
+// are reused across machines via r.artifactCache, and host-side files are
+// content-addressed under <HostPath>/<sha256>/.
+func (r *LibvirtMachineReconciler) reconcileBootArtifacts(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	if rc.libvirtCluster == nil || rc.libvirtCluster.Spec.BootArtifacts == nil {
+		return nil
+	}
+	if r.BootArtifactsResolver == nil {
+		return fmt.Errorf("bootArtifacts requested but no resolver is wired")
+	}
+	ba := rc.libvirtCluster.Spec.BootArtifacts
+
+	artifacts, err := r.resolveCachedArtifacts(ctx, ba.Source)
+	if err != nil {
+		return fmt.Errorf("resolving boot artifacts: %w", err)
+	}
+
+	hostPath := strings.TrimRight(ba.HostPath, "/")
+	kernelPath := path.Join(hostPath, artifacts.KernelSHA256, "vmlinuz")
+	initrdPath := path.Join(hostPath, artifacts.InitramfsSHA256, "initramfs.img")
+
+	if err := r.ensureRemoteArtifact(ctx, rc.libvirtClient, kernelPath, artifacts.KernelBytes); err != nil {
+		return r.handleLibvirtError(rc.libvirtMachine, err, "staging boot kernel")
+	}
+	if err := r.ensureRemoteArtifact(ctx, rc.libvirtClient, initrdPath, artifacts.InitramfsBytes); err != nil {
+		return r.handleLibvirtError(rc.libvirtMachine, err, "staging boot initramfs")
+	}
+
+	rc.kernelPath = kernelPath
+	rc.initrdPath = initrdPath
+	rc.kernelCmdline = ba.KernelArgs
+	log.Info("Direct-boot artifacts staged", "kernel", kernelPath, "initrd", initrdPath)
+	return nil
+}
+
+func (r *LibvirtMachineReconciler) resolveCachedArtifacts(
+	ctx context.Context,
+	src infrav1.BootArtifactsSource,
+) (*bootartifacts.Artifacts, error) {
+	key := bootArtifactsCacheKey(src)
+	if cached, ok := r.artifactCache.Load(key); ok {
+		return cached.(*bootartifacts.Artifacts), nil
+	}
+	artifacts, err := r.BootArtifactsResolver.Resolve(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	r.artifactCache.Store(key, artifacts)
+	return artifacts, nil
+}
+
+func (r *LibvirtMachineReconciler) ensureRemoteArtifact(
+	ctx context.Context,
+	c libvirt.Client,
+	remotePath string,
+	data []byte,
+) error {
+	exists, err := c.RemoteFileExists(ctx, remotePath)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return c.WriteRemoteFile(ctx, remotePath, data)
+}
+
+// bootArtifactsCacheKey produces a stable cache key from a source spec so we
+// don't re-fetch the same artifacts for every machine in a cluster.
+func bootArtifactsCacheKey(src infrav1.BootArtifactsSource) string {
+	var b strings.Builder
+	b.WriteString("type=")
+	b.WriteString(string(src.Type))
+	b.WriteByte('\n')
+	if src.HTTPS != nil {
+		b.WriteString("https.kernel=" + src.HTTPS.KernelURL + "\n")
+		b.WriteString("https.initramfs=" + src.HTTPS.InitramfsURL + "\n")
+		b.WriteString("https.kernel.sha256=" + src.HTTPS.KernelSHA256 + "\n")
+		b.WriteString("https.initramfs.sha256=" + src.HTTPS.InitramfsSHA256 + "\n")
+	}
+	if src.OCI != nil {
+		b.WriteString("oci.ref=" + src.OCI.Reference + "\n")
+	}
+	if src.S3 != nil {
+		b.WriteString("s3.endpoint=" + src.S3.Endpoint + "\n")
+		b.WriteString("s3.bucket=" + src.S3.Bucket + "\n")
+		b.WriteString("s3.kernel=" + src.S3.KernelKey + "\n")
+		b.WriteString("s3.initramfs=" + src.S3.InitramfsKey + "\n")
+		b.WriteString("s3.kernel.sha256=" + src.S3.KernelSHA256 + "\n")
+		b.WriteString("s3.initramfs.sha256=" + src.S3.InitramfsSHA256 + "\n")
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
 // reconcileDomain defines and starts the libvirt domain, returning its info.
 func (r *LibvirtMachineReconciler) reconcileDomain(ctx context.Context, rc *reconcileCtx) (*libvirt.DomainInfo, error) {
 	log := logf.FromContext(ctx)
@@ -768,6 +888,9 @@ func (r *LibvirtMachineReconciler) reconcileDomain(ctx context.Context, rc *reco
 			NetworkName:     libvirtMachine.Spec.Network.Name,
 			NetworkModel:    libvirtMachine.Spec.Network.Model,
 			MACAddress:      libvirtMachine.Spec.Network.MACAddress,
+			KernelPath:      rc.kernelPath,
+			InitrdPath:      rc.initrdPath,
+			KernelCmdline:   rc.kernelCmdline,
 		}
 
 		switch libvirtMachine.Spec.BootstrapFormat {
