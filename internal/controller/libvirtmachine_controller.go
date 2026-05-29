@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -395,9 +396,7 @@ func (r *LibvirtMachineReconciler) reconcileNodeLabels(
 			delete(node.Labels, k)
 		}
 	}
-	for k, v := range desiredLabels {
-		node.Labels[k] = v
-	}
+	maps.Copy(node.Labels, desiredLabels)
 
 	if node.Annotations == nil {
 		node.Annotations = map[string]string{}
@@ -407,9 +406,7 @@ func (r *LibvirtMachineReconciler) reconcileNodeLabels(
 			delete(node.Annotations, k)
 		}
 	}
-	for k, v := range desiredAnnotations {
-		node.Annotations[k] = v
-	}
+	maps.Copy(node.Annotations, desiredAnnotations)
 
 	if len(desiredLabels) > 0 {
 		node.Annotations[infrav1.ManagedNodeLabelsAnnotation] = formatManagedKeys(desiredLabels)

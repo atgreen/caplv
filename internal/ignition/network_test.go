@@ -23,6 +23,8 @@ import (
 	"testing"
 )
 
+const enp1s0NMConnectionPath = "/etc/NetworkManager/system-connections/enp1s0.nmconnection"
+
 func TestInjectStaticNetwork(t *testing.T) {
 	input := testIgnitionV3Input
 	net := NetworkConfig{
@@ -45,7 +47,7 @@ func TestInjectStaticNetwork(t *testing.T) {
 	found := false
 	for _, f := range files {
 		fm := f.(map[string]any)
-		if fm["path"] == "/etc/NetworkManager/system-connections/enp1s0.nmconnection" {
+		if fm["path"] == enp1s0NMConnectionPath {
 			contents := fm["contents"].(map[string]any)
 			source := contents["source"].(string)
 			decoded, err := url.PathUnescape(strings.TrimPrefix(source, "data:,"))
@@ -112,7 +114,7 @@ func TestInjectStaticNetworkMultipleAddresses(t *testing.T) {
 	files := config["storage"].(map[string]any)["files"].([]any)
 	for _, f := range files {
 		fm := f.(map[string]any)
-		if fm["path"] == "/etc/NetworkManager/system-connections/enp1s0.nmconnection" {
+		if fm["path"] == enp1s0NMConnectionPath {
 			contents := fm["contents"].(map[string]any)
 			source := contents["source"].(string)
 			decoded, _ := url.PathUnescape(strings.TrimPrefix(source, "data:,"))
@@ -149,7 +151,7 @@ func TestInjectStaticNetworkDNS(t *testing.T) {
 	files := config["storage"].(map[string]any)["files"].([]any)
 	for _, f := range files {
 		fm := f.(map[string]any)
-		if fm["path"] == "/etc/NetworkManager/system-connections/enp1s0.nmconnection" {
+		if fm["path"] == enp1s0NMConnectionPath {
 			contents := fm["contents"].(map[string]any)
 			source := contents["source"].(string)
 			decoded, _ := url.PathUnescape(strings.TrimPrefix(source, "data:,"))
