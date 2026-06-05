@@ -18,13 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Go dependency vulnerability checking via govulncheck
 - SLSA Level 3 provenance generation for release artifacts
 - GitHub Artifact Attestation for container images
-- Deploy manifest packaging for releases (CRDs + kustomize output)
+- Release artifacts follow the [CAPI clusterctl provider contract](https://cluster-api.sigs.k8s.io/clusterctl/provider-contract.html): `infrastructure-components.yaml`, `metadata.yaml`, and `cluster-template.yaml` are published as individual top-level release assets (replacing the `deploy-manifests.tar.gz` bundle), so the provider can be consumed directly by `clusterctl init`, `clusterctl generate cluster`, ArgoCD, and other tooling that expects per-file URLs
 - Multi-architecture container builds (linux/amd64, linux/arm64)
 - Event-driven versioning (semver for releases, date-based for main, pr-NUMBER for PRs)
 
 ### Changed
 - Consolidated separate CI workflows (test, lint, e2e, image) into a single unified build pipeline
 - Container images now pushed to GHCR with consistent tagging across all event types
+- Release workflow triggers on `v*` tag push and creates a DRAFT release for the maintainer to review before publishing (matches the CAPI ecosystem convention used by cluster-api-provider-vsphere); the previous flow ran on release-published, which left the release public if any earlier job failed
+- `make build-installer` stages `config/` in a build dir before running `kustomize edit set image`, so the checked-in `config/manager/kustomization.yaml` is no longer mutated as a side effect of producing a release manifest locally
 
 ### Fixed
 - E2E CI failure: set CONTAINER_TOOL=docker for GitHub Actions runners

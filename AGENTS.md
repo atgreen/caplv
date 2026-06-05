@@ -253,18 +253,18 @@ Generated code includes: status conditions (`metav1.Condition`), finalizers, own
 ### Option 1: YAML Bundle (Kustomize)
 
 ```bash
-# Generate dist/install.yaml from Kustomize manifests
+# Generate dist/infrastructure-components.yaml from Kustomize manifests
 make build-installer IMG=<registry>/<project>:tag
 ```
 
 **Key points:**
-- The `dist/install.yaml` is generated from Kustomize manifests (CRDs, RBAC, Deployment)
-- Commit this file to your repository for easy distribution
+- The `dist/infrastructure-components.yaml` follows the [CAPI provider contract](https://cluster-api.sigs.k8s.io/clusterctl/provider-contract.html) and is generated from Kustomize manifests (CRDs, RBAC, Deployment)
+- Published as a release asset alongside `metadata.yaml` so `clusterctl init` (and tools like ArgoCD) can consume it directly
 - Users only need `kubectl` to install (no additional tools required)
 
 **Example:** Users install with a single command:
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/<org>/<repo>/<tag>/dist/install.yaml
+kubectl apply -f https://github.com/<org>/<repo>/releases/download/<tag>/infrastructure-components.yaml
 ```
 
 ### Option 2: Helm Chart

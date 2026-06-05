@@ -140,10 +140,16 @@ docker-push: podman-push
 docker-buildx: podman-buildx
 
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: manifests generate kustomize ## Generate the CAPI infrastructure-components.yaml release manifest.
+	# Stage config/ in a build dir so `kustomize edit set image` does not
+	# mutate the checked-in config/manager/kustomization.yaml. The build dir
+	# is removed and recreated on every run.
 	mkdir -p dist
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	rm -rf dist/build
+	cp -R config dist/build
+	cd dist/build/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	"$(KUSTOMIZE)" build dist/build/default > dist/infrastructure-components.yaml
+	rm -rf dist/build
 
 ##@ Deployment
 
