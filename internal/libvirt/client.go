@@ -52,6 +52,7 @@ type Client interface {
 	DeleteVolume(ctx context.Context, pool, name string) error
 	GetVolumePath(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFile(ctx context.Context, path string, data []byte) error
+	RemoteFileExists(ctx context.Context, path string) (bool, error)
 	DeleteRemoteFile(ctx context.Context, path string) error
 	Close() error
 }

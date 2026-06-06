@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	infrastructurev1alpha1 "github.com/atgreen/caplv/api/v1alpha1"
+	"github.com/atgreen/caplv/internal/bootartifacts"
 	"github.com/atgreen/caplv/internal/controller"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
@@ -192,6 +193,7 @@ func main() {
 		SSHClientFactory:        sshClientFactory,
 		LibvirtClientFactory:    libvirtClientFactory,
 		ISOBuilder:              iso.NewDiskfsBuilder(),
+		BootArtifactsResolver:   bootartifacts.NewMultiResolver(),
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtMachine")

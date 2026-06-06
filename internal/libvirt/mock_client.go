@@ -39,6 +39,7 @@ type MockClient struct {
 	DeleteVolumeFn                 func(ctx context.Context, pool, name string) error
 	GetVolumePathFn                func(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFileFn              func(ctx context.Context, path string, data []byte) error
+	RemoteFileExistsFn             func(ctx context.Context, path string) (bool, error)
 	DeleteRemoteFileFn             func(ctx context.Context, path string) error
 	CloseFn                        func() error
 }
@@ -193,6 +194,14 @@ func (m *MockClient) WriteRemoteFile(ctx context.Context, path string, data []by
 		return m.WriteRemoteFileFn(ctx, path, data)
 	}
 	return nil
+}
+
+// RemoteFileExists delegates to RemoteFileExistsFn or returns false, nil.
+func (m *MockClient) RemoteFileExists(ctx context.Context, path string) (bool, error) {
+	if m.RemoteFileExistsFn != nil {
+		return m.RemoteFileExistsFn(ctx, path)
+	}
+	return false, nil
 }
 
 // DeleteRemoteFile delegates to DeleteRemoteFileFn or returns nil.
