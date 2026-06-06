@@ -420,10 +420,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      # Download only the artifacts we actually attach to the release.
+      # An unfiltered download also pulls the *.dockerbuild metadata blob
+      # produced by docker/build-push-action with sbom/provenance enabled,
+      # which we never use and which has caused transient artifact-CDN
+      # download failures that fail the whole job.
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
+          pattern: "{release-manifests,docker-sbom,trivy-report,*.intoto.jsonl}"
 
       - name: Organize release artifacts
         run: |
