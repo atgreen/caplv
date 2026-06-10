@@ -6,7 +6,12 @@
 #   ansible-playbook -i <host>, -u root deploy/ansible/setup-host.yaml
 #
 # Optional variables (--extra-vars):
-#   base_image_url    - URL to download a qcow2 base image
+#   stage_base_image  - set to "true" to download a qcow2 base image at host
+#                       setup time. Default false. Most clusters now use
+#                       LibvirtCluster.spec.baseImage instead, which lets the
+#                       controller distribute the qcow2 on demand and removes
+#                       the version-mismatch risk between hosts.
+#   base_image_url    - URL to download (only consulted when stage_base_image=true)
 #   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
 #   caplv_user        - service account name (default: caplv)
 #   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
@@ -20,6 +25,7 @@
   vars:
     caplv_user: caplv
     storage_pool_path: /var/lib/libvirt/images
+    stage_base_image: false
     base_image_url: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.18/latest/rhcos-qemu.x86_64.qcow2.gz
     base_image_name: rhcos.qcow2
     ssh_key_path: /tmp/caplv-key
@@ -164,16 +170,20 @@
       ansible.builtin.stat:
         path: "{{ storage_pool_path }}/{{ base_image_name }}"
       register: base_image_stat
+      when: stage_base_image | bool
 
     - name: Download and decompress base image
       ansible.builtin.shell: |
         curl -fL "{{ base_image_url }}" | gunzip > "{{ storage_pool_path }}/{{ base_image_name }}"
         chmod 644 "{{ storage_pool_path }}/{{ base_image_name }}"
-      when: not base_image_stat.stat.exists
+      when:
+        - stage_base_image | bool
+        - not base_image_stat.stat.exists
 
     - name: Refresh storage pool
       ansible.builtin.command: "virsh pool-refresh {{ libvirt_pool_name }}"
       changed_when: false
+      when: stage_base_image | bool
 
     # ── Verification ──────────────────────────────────────────
 

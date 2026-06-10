@@ -16,7 +16,10 @@ limitations under the License.
 
 package libvirt
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // DomainInfo holds basic information about a libvirt domain.
 type DomainInfo struct {
@@ -49,6 +52,11 @@ type Client interface {
 	CloneVolume(ctx context.Context, pool, sourceName, targetName string) error
 	CreateVolume(ctx context.Context, pool, name string, sizeBytes int64) error
 	UploadVolumeFromBytes(ctx context.Context, pool, name string, data []byte) error
+	// UploadQcow2Volume streams qcow2 bytes from r to a new qcow2 volume in
+	// pool named name. The volume's libvirt-side capacity is set to
+	// virtualSizeBytes (the qcow2 header's virtual disk size, parsed by the
+	// caller from the local cache file).
+	UploadQcow2Volume(ctx context.Context, pool, name string, r io.Reader, virtualSizeBytes int64) error
 	DeleteVolume(ctx context.Context, pool, name string) error
 	GetVolumePath(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFile(ctx context.Context, path string, data []byte) error

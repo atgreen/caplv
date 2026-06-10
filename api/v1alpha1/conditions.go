@@ -25,6 +25,7 @@ const (
 	HostReachableForMachineCondition = "HostReachable"
 	ArtifactsCreatedCondition        = "ArtifactsCreated"
 	BootstrapDataReadyCondition      = "BootstrapDataReady"
+	BaseImageStagedCondition         = "BaseImageStaged"
 	CleanupStalledCondition          = "CleanupStalled"
 	NodeLabelledCondition            = "NodeLabelled"
 
@@ -43,6 +44,7 @@ const (
 	ReasonBootstrapDataNotReady = "BootstrapDataNotReady"
 	ReasonHostNotReady          = "HostNotReady"
 	ReasonNodeNotJoined         = "NodeNotJoined"
+	ReasonBaseImageStaging      = "BaseImageStaging"
 
 	// Reasons — success
 	ReasonConnectionSucceeded = "ConnectionSucceeded"
@@ -50,6 +52,7 @@ const (
 	ReasonArtifactsReady      = "ArtifactsReady"
 	ReasonClusterReady        = "ClusterReady"
 	ReasonNodeLabelled        = "NodeLabelled"
+	ReasonBaseImageStaged     = "BaseImageStaged"
 
 	// Reasons — cleanup
 	ReasonCleanupStalled   = "CleanupStalled"

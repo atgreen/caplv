@@ -33,6 +33,134 @@ type LibvirtClusterSpec struct {
 	// burns seconds of wall-clock time for multi-MB ignition payloads.
 	// +optional
 	BootArtifacts *BootArtifactsSpec `json:"bootArtifacts,omitempty"`
+
+	// baseImage, when set, lets the controller distribute the cluster's
+	// root-disk qcow2 base image to every libvirt host that runs a machine in
+	// this cluster. The image is fetched once into the controller-local cache
+	// and SCP'd onto each host as needed; subsequent machines on the same
+	// host reuse the already-staged volume. Hosts no longer need the qcow2
+	// pre-staged via Ansible.
+	// +optional
+	BaseImage *BaseImageSpec `json:"baseImage,omitempty"`
+}
+
+// BaseImageSpec describes a qcow2 base image to stage in each libvirt host's
+// storage pool. Once staged, LibvirtMachine.spec.rootDisk.baseImage refers to
+// it by the volume name configured here.
+type BaseImageSpec struct {
+	// Pool is the libvirt storage pool name on each host where the image is
+	// staged. Must exist on every LibvirtHost in the cluster.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Pool string `json:"pool"`
+
+	// VolumeName is the libvirt volume name the staged image will register as
+	// inside Pool. Use the same value in LibvirtMachine.spec.rootDisk.baseImage.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	VolumeName string `json:"volumeName"`
+
+	// Source describes where to fetch the qcow2 from. Gzip-wrapped payloads
+	// (URL ending in .gz, OCI mediaType application/gzip, or any blob whose
+	// first two bytes are 0x1f 0x8b) are decompressed transparently before
+	// the digest is computed.
+	// +kubebuilder:validation:Required
+	Source BaseImageSource `json:"source"`
+}
+
+// BaseImageSource selects one transport-specific source for the qcow2.
+type BaseImageSource struct {
+	// +kubebuilder:validation:Enum=HTTPS;OCI;S3
+	// +kubebuilder:validation:Required
+	Type BootArtifactsSourceType `json:"type"`
+
+	// +optional
+	HTTPS *HTTPSBaseImageSource `json:"https,omitempty"`
+	// +optional
+	OCI *OCIBaseImageSource `json:"oci,omitempty"`
+	// +optional
+	S3 *S3BaseImageSource `json:"s3,omitempty"`
+}
+
+// HTTPSBaseImageSource fetches the qcow2 over HTTPS.
+type HTTPSBaseImageSource struct {
+	// URL is the https:// (or http:// when explicitly allowed by the
+	// caller's network policy) URL to the qcow2 file.
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+	// SHA256 of the decompressed qcow2. Optional but strongly recommended
+	// when the URL is mutable; pinned digests prevent accidental version
+	// drift across the fleet.
+	// +optional
+	SHA256 string `json:"sha256,omitempty"`
+	// CredentialsSecretRef is a Secret with `username`/`password` keys for
+	// HTTP Basic auth, or the kubernetes.io/dockerconfigjson layout.
+	// +optional
+	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+}
+
+// OCIBaseImageSource fetches the qcow2 from a single-blob OCI artifact.
+// The manifest is expected to contain one layer carrying the qcow2; if the
+// layer is annotated with `org.opencontainers.image.title`, BlobTitle
+// selects it, otherwise the single layer is taken implicitly.
+type OCIBaseImageSource struct {
+	// Reference is the full OCI reference, e.g. "ghcr.io/example/rhcos:4.18".
+	// +kubebuilder:validation:Required
+	Reference string `json:"reference"`
+
+	// BlobTitle is the `org.opencontainers.image.title` annotation
+	// identifying the qcow2 layer. When empty and the manifest has exactly
+	// one layer, that layer is selected automatically.
+	// +optional
+	BlobTitle string `json:"blobTitle,omitempty"`
+
+	// PlainHTTP allows non-TLS pulls from the registry.
+	// +optional
+	PlainHTTP bool `json:"plainHTTP,omitempty"`
+
+	// InsecureSkipTLSVerify disables TLS certificate verification.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// CredentialsSecretRef references a Secret holding registry credentials.
+	// +optional
+	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// SHA256 of the decompressed qcow2. Optional but recommended.
+	// +optional
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+// S3BaseImageSource fetches the qcow2 from an S3-compatible object store.
+type S3BaseImageSource struct {
+	// Endpoint is the S3 endpoint host[:port].
+	// +kubebuilder:validation:Required
+	Endpoint string `json:"endpoint"`
+	// Region for AWS S3; optional for MinIO/Ceph.
+	// +optional
+	Region string `json:"region,omitempty"`
+	// +kubebuilder:validation:Required
+	Bucket string `json:"bucket"`
+	// +kubebuilder:validation:Required
+	Key string `json:"key"`
+
+	// UsePathStyle forces path-style addressing.
+	// +optional
+	UsePathStyle bool `json:"usePathStyle,omitempty"`
+	// Insecure switches the endpoint to plain HTTP.
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+	// InsecureSkipTLSVerify disables TLS certificate verification.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// CredentialsSecretRef references a Secret holding static credentials.
+	// +optional
+	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// SHA256 of the decompressed qcow2. Optional but recommended.
+	// +optional
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // BootArtifactsSpec configures direct-kernel-boot of first-boot artifacts.

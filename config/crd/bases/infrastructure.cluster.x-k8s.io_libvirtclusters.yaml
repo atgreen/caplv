@@ -51,6 +51,177 @@ spec:
           spec:
             description: spec defines the desired state of LibvirtCluster.
             properties:
+              baseImage:
+                description: |-
+                  baseImage, when set, lets the controller distribute the cluster's
+                  root-disk qcow2 base image to every libvirt host that runs a machine in
+                  this cluster. The image is fetched once into the controller-local cache
+                  and SCP'd onto each host as needed; subsequent machines on the same
+                  host reuse the already-staged volume. Hosts no longer need the qcow2
+                  pre-staged via Ansible.
+                properties:
+                  pool:
+                    description: |-
+                      Pool is the libvirt storage pool name on each host where the image is
+                      staged. Must exist on every LibvirtHost in the cluster.
+                    minLength: 1
+                    type: string
+                  source:
+                    description: |-
+                      Source describes where to fetch the qcow2 from. Gzip-wrapped payloads
+                      (URL ending in .gz, OCI mediaType application/gzip, or any blob whose
+                      first two bytes are 0x1f 0x8b) are decompressed transparently before
+                      the digest is computed.
+                    properties:
+                      https:
+                        description: HTTPSBaseImageSource fetches the qcow2 over HTTPS.
+                        properties:
+                          credentialsSecretRef:
+                            description: |-
+                              CredentialsSecretRef is a Secret with `username`/`password` keys for
+                              HTTP Basic auth, or the kubernetes.io/dockerconfigjson layout.
+                            properties:
+                              name:
+                                description: Name of the Secret.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the LibvirtCluster's namespace.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          sha256:
+                            description: |-
+                              SHA256 of the decompressed qcow2. Optional but strongly recommended
+                              when the URL is mutable; pinned digests prevent accidental version
+                              drift across the fleet.
+                            type: string
+                          url:
+                            description: |-
+                              URL is the https:// (or http:// when explicitly allowed by the
+                              caller's network policy) URL to the qcow2 file.
+                            type: string
+                        required:
+                        - url
+                        type: object
+                      oci:
+                        description: |-
+                          OCIBaseImageSource fetches the qcow2 from a single-blob OCI artifact.
+                          The manifest is expected to contain one layer carrying the qcow2; if the
+                          layer is annotated with `org.opencontainers.image.title`, BlobTitle
+                          selects it, otherwise the single layer is taken implicitly.
+                        properties:
+                          blobTitle:
+                            description: |-
+                              BlobTitle is the `org.opencontainers.image.title` annotation
+                              identifying the qcow2 layer. When empty and the manifest has exactly
+                              one layer, that layer is selected automatically.
+                            type: string
+                          credentialsSecretRef:
+                            description: CredentialsSecretRef references a Secret
+                              holding registry credentials.
+                            properties:
+                              name:
+                                description: Name of the Secret.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the LibvirtCluster's namespace.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          insecureSkipTLSVerify:
+                            description: InsecureSkipTLSVerify disables TLS certificate
+                              verification.
+                            type: boolean
+                          plainHTTP:
+                            description: PlainHTTP allows non-TLS pulls from the registry.
+                            type: boolean
+                          reference:
+                            description: Reference is the full OCI reference, e.g.
+                              "ghcr.io/example/rhcos:4.18".
+                            type: string
+                          sha256:
+                            description: SHA256 of the decompressed qcow2. Optional
+                              but recommended.
+                            type: string
+                        required:
+                        - reference
+                        type: object
+                      s3:
+                        description: S3BaseImageSource fetches the qcow2 from an S3-compatible
+                          object store.
+                        properties:
+                          bucket:
+                            type: string
+                          credentialsSecretRef:
+                            description: CredentialsSecretRef references a Secret
+                              holding static credentials.
+                            properties:
+                              name:
+                                description: Name of the Secret.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the LibvirtCluster's namespace.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          endpoint:
+                            description: Endpoint is the S3 endpoint host[:port].
+                            type: string
+                          insecure:
+                            description: Insecure switches the endpoint to plain HTTP.
+                            type: boolean
+                          insecureSkipTLSVerify:
+                            description: InsecureSkipTLSVerify disables TLS certificate
+                              verification.
+                            type: boolean
+                          key:
+                            type: string
+                          region:
+                            description: Region for AWS S3; optional for MinIO/Ceph.
+                            type: string
+                          sha256:
+                            description: SHA256 of the decompressed qcow2. Optional
+                              but recommended.
+                            type: string
+                          usePathStyle:
+                            description: UsePathStyle forces path-style addressing.
+                            type: boolean
+                        required:
+                        - bucket
+                        - endpoint
+                        - key
+                        type: object
+                      type:
+                        description: BootArtifactsSourceType enumerates supported
+                          artifact transports.
+                        enum:
+                        - HTTPS
+                        - OCI
+                        - S3
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  volumeName:
+                    description: |-
+                      VolumeName is the libvirt volume name the staged image will register as
+                      inside Pool. Use the same value in LibvirtMachine.spec.rootDisk.baseImage.
+                    minLength: 1
+                    type: string
+                required:
+                - pool
+                - source
+                - volumeName
+                type: object
               bootArtifacts:
                 description: |-
                   bootArtifacts, when set, switches first-boot ignition delivery from

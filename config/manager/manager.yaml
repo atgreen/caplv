@@ -83,8 +83,17 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        - name: base-image-cache
+          mountPath: /var/cache/caplv/baseimages
       volumes:
       - name: tmp
         emptyDir: {}
+      # base-image-cache holds qcow2 payloads fetched from
+      # LibvirtCluster.spec.baseImage.source URLs before being SCP'd onto
+      # libvirt hosts. The default emptyDir means re-downloads after pod
+      # restart; switch to a PVC if your fleet churns frequently.
+      - name: base-image-cache
+        emptyDir:
+          sizeLimit: 20Gi
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

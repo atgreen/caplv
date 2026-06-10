@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -47,6 +48,7 @@ import (
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
 	"github.com/atgreen/caplv/internal/bootartifacts"
 	"github.com/atgreen/caplv/internal/ignition"
+	"github.com/atgreen/caplv/internal/imagecache"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
 	"github.com/atgreen/caplv/internal/scope"
@@ -77,12 +79,20 @@ type LibvirtMachineReconciler struct {
 	// has spec.bootArtifacts set. Resolved bytes are cached in artifactCache
 	// keyed by a stable digest of the source spec.
 	BootArtifactsResolver bootartifacts.Resolver
+	// BaseImageCache stages qcow2 base images locally on the controller (per
+	// LibvirtCluster.spec.baseImage) and hands their paths to the per-host
+	// upload step. Nil disables the baseImage feature.
+	BaseImageCache *imagecache.Cache
 	// MaxConcurrentReconciles is the number of machines reconciled in parallel.
 	// Each reconcile targets a different libvirt host over its own SSH connection.
 	// Default: 50.
 	MaxConcurrentReconciles int
 
 	artifactCache sync.Map
+
+	// baseImageHostUpload coalesces concurrent uploads of the same staged
+	// image to the same host. Key: "<host>|<volume-sha256>".
+	baseImageHostUpload sync.Map
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=libvirtmachines,verbs=get;list;watch;create;update;patch;delete
@@ -299,6 +309,11 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	// Enrich logger with host and domain context.
 	log = log.WithValues("host", libvirtHost.Name, "domain", rc.domainName)
 	ctx = logf.IntoContext(ctx, log)
+
+	// Step -1: Stage the cluster's base image onto this host if needed.
+	if err := r.reconcileBaseImage(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Step 0+1: Ensure ephemeral pool and root disk.
 	if err := r.reconcileRootDisk(ctx, rc); err != nil {
@@ -568,6 +583,178 @@ func (r *LibvirtMachineReconciler) resolveAutoSizing(
 		log.Info("Auto-sized VM from host capacity", "vcpus", resolvedVCPUs, "memoryMB", resolvedMemoryMB)
 	}
 	return resolvedVCPUs, resolvedMemoryMB, nil
+}
+
+// reconcileBaseImage stages the cluster-level base qcow2 onto this host if
+// LibvirtCluster.spec.baseImage is set and the configured volume isn't
+// already present in the pool. The qcow2 is fetched into the controller's
+// local cache (singleflight'd across machines in the same cluster) and
+// streamed onto the host via SSH, then registered with libvirt via
+// vol-create-as + vol-upload. Multiple machines on the same host racing
+// to stage the same image are coalesced per (host, sha256).
+func (r *LibvirtMachineReconciler) reconcileBaseImage(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	if rc.libvirtCluster == nil || rc.libvirtCluster.Spec.BaseImage == nil {
+		return nil
+	}
+	if r.BaseImageCache == nil {
+		return fmt.Errorf("baseImage requested but no image cache is wired")
+	}
+	bi := rc.libvirtCluster.Spec.BaseImage
+
+	// Fast path: volume already present in the pool — nothing to do.
+	exists, err := rc.libvirtClient.VolumeExists(ctx, bi.Pool, bi.VolumeName)
+	if err != nil {
+		return r.handleLibvirtError(rc.libvirtMachine, err, "checking base image volume")
+	}
+	if exists {
+		return nil
+	}
+
+	apimeta.SetStatusCondition(&rc.libvirtMachine.Status.Conditions, metav1.Condition{
+		Type:               infrav1.BaseImageStagedCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             infrav1.ReasonBaseImageStaging,
+		Message:            fmt.Sprintf("Staging base image to %s on %s", bi.Pool, rc.libvirtHost.Name),
+		ObservedGeneration: rc.libvirtMachine.Generation,
+	})
+
+	// Resolve credentials, fetch into local cache (singleflight'd).
+	creds, err := r.resolveBaseImageCredentials(ctx, rc.libvirtCluster)
+	if err != nil {
+		return fmt.Errorf("resolving baseImage credentials: %w", err)
+	}
+	entry, err := r.BaseImageCache.Get(ctx, bi.Source, creds, baseImageExpectedSHA256(bi.Source))
+	if err != nil {
+		return fmt.Errorf("fetching baseImage: %w", err)
+	}
+
+	// Per-(host, sha) singleflight: prevent N machines on the same host from
+	// all uploading the same qcow2 in parallel.
+	uploadKey := rc.libvirtHost.Name + "|" + entry.SHA256
+	uploaderAny, _ := r.baseImageHostUpload.LoadOrStore(uploadKey, &sync.Mutex{})
+	uploader := uploaderAny.(*sync.Mutex)
+	uploader.Lock()
+	defer uploader.Unlock()
+
+	// Re-check existence under the lock: another reconcile may have just
+	// completed the upload while we waited.
+	if exists, err := rc.libvirtClient.VolumeExists(ctx, bi.Pool, bi.VolumeName); err != nil {
+		return r.handleLibvirtError(rc.libvirtMachine, err, "rechecking base image volume")
+	} else if exists {
+		return nil
+	}
+
+	virtualSize, err := libvirt.Qcow2VirtualSize(entry.Path)
+	if err != nil {
+		return fmt.Errorf("read qcow2 header: %w", err)
+	}
+
+	f, err := os.Open(entry.Path)
+	if err != nil {
+		return fmt.Errorf("open cached qcow2: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	log.Info("Staging base image", "pool", bi.Pool, "volume", bi.VolumeName,
+		"sha256", entry.SHA256, "virtualSize", virtualSize, "host", rc.libvirtHost.Name)
+	if err := rc.libvirtClient.UploadQcow2Volume(ctx, bi.Pool, bi.VolumeName, f, virtualSize); err != nil {
+		return r.handleLibvirtError(rc.libvirtMachine, err, "uploading base image")
+	}
+
+	apimeta.SetStatusCondition(&rc.libvirtMachine.Status.Conditions, metav1.Condition{
+		Type:               infrav1.BaseImageStagedCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             infrav1.ReasonBaseImageStaged,
+		Message:            fmt.Sprintf("Base image staged in %s as %s", bi.Pool, bi.VolumeName),
+		ObservedGeneration: rc.libvirtMachine.Generation,
+	})
+	return nil
+}
+
+// baseImageExpectedSHA256 returns the user-supplied digest from the active
+// transport, or "" when none was provided.
+func baseImageExpectedSHA256(src infrav1.BaseImageSource) string {
+	switch src.Type {
+	case infrav1.BootArtifactsSourceHTTPS:
+		if src.HTTPS != nil {
+			return src.HTTPS.SHA256
+		}
+	case infrav1.BootArtifactsSourceOCI:
+		if src.OCI != nil {
+			return src.OCI.SHA256
+		}
+	case infrav1.BootArtifactsSourceS3:
+		if src.S3 != nil {
+			return src.S3.SHA256
+		}
+	}
+	return ""
+}
+
+// resolveBaseImageCredentials reads the Secret referenced by the active
+// transport's CredentialsSecretRef. Returns (nil, nil) when no ref is set.
+func (r *LibvirtMachineReconciler) resolveBaseImageCredentials(
+	ctx context.Context, libvirtCluster *infrav1.LibvirtCluster,
+) (*imagecache.Credentials, error) {
+	bi := libvirtCluster.Spec.BaseImage
+	if bi == nil {
+		return nil, nil
+	}
+	var ref *infrav1.BootArtifactsSecretReference
+	switch bi.Source.Type {
+	case infrav1.BootArtifactsSourceHTTPS:
+		if bi.Source.HTTPS != nil {
+			ref = bi.Source.HTTPS.CredentialsSecretRef
+		}
+	case infrav1.BootArtifactsSourceOCI:
+		if bi.Source.OCI != nil {
+			ref = bi.Source.OCI.CredentialsSecretRef
+		}
+	case infrav1.BootArtifactsSourceS3:
+		if bi.Source.S3 != nil {
+			ref = bi.Source.S3.CredentialsSecretRef
+		}
+	}
+	if ref == nil {
+		return nil, nil
+	}
+
+	ns := ref.Namespace
+	if ns == "" {
+		ns = libvirtCluster.Namespace
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, secret); err != nil {
+		return nil, fmt.Errorf("get secret %s/%s: %w", ns, ref.Name, err)
+	}
+
+	switch bi.Source.Type {
+	case infrav1.BootArtifactsSourceOCI:
+		creds, err := ociCredentialsFromSecret(secret, bi.Source.OCI.Reference)
+		if err != nil {
+			return nil, err
+		}
+		return &imagecache.Credentials{Username: creds.Username, Password: creds.Password}, nil
+	case infrav1.BootArtifactsSourceS3:
+		creds, err := s3CredentialsFromSecret(secret)
+		if err != nil {
+			return nil, err
+		}
+		return &imagecache.Credentials{
+			AccessKeyID:     creds.AccessKeyID,
+			SecretAccessKey: creds.SecretAccessKey,
+			SessionToken:    creds.SessionToken,
+		}, nil
+	case infrav1.BootArtifactsSourceHTTPS:
+		// HTTPS uses username/password from the same shapes as OCI basic auth.
+		creds, err := ociCredentialsFromSecret(secret, "")
+		if err != nil {
+			return nil, err
+		}
+		return &imagecache.Credentials{Username: creds.Username, Password: creds.Password}, nil
+	}
+	return nil, nil
 }
 
 // reconcileRootDisk ensures the ephemeral pool (if requested) and root disk

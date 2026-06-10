@@ -40,6 +40,7 @@ import (
 	infrastructurev1alpha1 "github.com/atgreen/caplv/api/v1alpha1"
 	"github.com/atgreen/caplv/internal/bootartifacts"
 	"github.com/atgreen/caplv/internal/controller"
+	"github.com/atgreen/caplv/internal/imagecache"
 	"github.com/atgreen/caplv/internal/iso"
 	"github.com/atgreen/caplv/internal/libvirt"
 	libvirtssh "github.com/atgreen/caplv/internal/ssh"
@@ -69,6 +70,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var maxConcurrentReconciles int
+	var baseImageCacheDir string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -90,6 +92,10 @@ func main() {
 			"Each targets a different host over its own SSH connection.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&baseImageCacheDir, "base-image-cache-dir", "/var/cache/caplv/baseimages",
+		"Directory inside the controller pod where base qcow2 images are staged "+
+			"after download. Should be backed by an emptyDir (or a PVC if survival "+
+			"across pod restarts is desired). Content-addressed by sha256.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -187,6 +193,12 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtCluster")
 		os.Exit(1)
 	}
+	baseImageCache, err := imagecache.New(baseImageCacheDir, imagecache.NewMultiResolver())
+	if err != nil {
+		setupLog.Error(err, "Failed to initialise base image cache",
+			"dir", baseImageCacheDir)
+		os.Exit(1)
+	}
 	if err := (&controller.LibvirtMachineReconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
@@ -194,6 +206,7 @@ func main() {
 		LibvirtClientFactory:    libvirtClientFactory,
 		ISOBuilder:              iso.NewDiskfsBuilder(),
 		BootArtifactsResolver:   bootartifacts.NewMultiResolver(),
+		BaseImageCache:          baseImageCache,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "LibvirtMachine")

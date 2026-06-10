@@ -16,7 +16,10 @@ limitations under the License.
 
 package libvirt
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // MockClient implements Client for testing.
 type MockClient struct {
@@ -36,6 +39,7 @@ type MockClient struct {
 	CloneVolumeFn                  func(ctx context.Context, pool, sourceName, targetName string) error
 	CreateVolumeFn                 func(ctx context.Context, pool, name string, sizeBytes int64) error
 	UploadVolumeFromBytesFn        func(ctx context.Context, pool, name string, data []byte) error
+	UploadQcow2VolumeFn            func(ctx context.Context, pool, name string, r io.Reader, virtualSizeBytes int64) error
 	DeleteVolumeFn                 func(ctx context.Context, pool, name string) error
 	GetVolumePathFn                func(ctx context.Context, pool, name string) (string, error)
 	WriteRemoteFileFn              func(ctx context.Context, path string, data []byte) error
@@ -168,6 +172,14 @@ func (m *MockClient) CreateVolume(ctx context.Context, pool, name string, sizeBy
 func (m *MockClient) UploadVolumeFromBytes(ctx context.Context, pool, name string, data []byte) error {
 	if m.UploadVolumeFromBytesFn != nil {
 		return m.UploadVolumeFromBytesFn(ctx, pool, name, data)
+	}
+	return nil
+}
+
+// UploadQcow2Volume delegates to UploadQcow2VolumeFn or returns nil.
+func (m *MockClient) UploadQcow2Volume(ctx context.Context, pool, name string, r io.Reader, virtualSizeBytes int64) error {
+	if m.UploadQcow2VolumeFn != nil {
+		return m.UploadQcow2VolumeFn(ctx, pool, name, r, virtualSizeBytes)
 	}
 	return nil
 }

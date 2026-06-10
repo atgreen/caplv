@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -437,6 +438,53 @@ func (c *VirshClient) UploadVolumeFromBytes(ctx context.Context, pool, name stri
 	}
 
 	return err
+}
+
+// UploadQcow2Volume streams a qcow2 from r into a new volume named `name`
+// inside `pool`. Implementation: stream r to a temp file on the host via
+// SSH `cat > <tmp>`, then `virsh vol-create-as` with the given virtual
+// size and `--format qcow2`, then `virsh vol-upload`, then unlink the
+// temp file. Atomicity: vol-upload is atomic from libvirt's perspective —
+// the volume isn't visible to other operations until upload completes.
+// On error the partial volume and temp file are cleaned up best-effort.
+func (c *VirshClient) UploadQcow2Volume(ctx context.Context, pool, name string, r io.Reader, virtualSizeBytes int64) error {
+	tmpFile := fmt.Sprintf("/tmp/caplv-upload-%d", time.Now().UnixNano())
+
+	// Stream r into the temp file on the host.
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	session.Stdin = r
+	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
+		_ = session.Close()
+		return fmt.Errorf("stream qcow2 to %s: %w", tmpFile, err)
+	}
+	_ = session.Close()
+
+	cleanupTmp := func() {
+		cs, _ := c.sshClient.NewSession()
+		if cs != nil {
+			_ = cs.Run(fmt.Sprintf("rm -f %s", tmpFile))
+			_ = cs.Close()
+		}
+	}
+
+	// Create the libvirt-side volume of the qcow2's virtual size, then
+	// upload the on-host file's bytes into it.
+	if _, err := c.runVirsh(ctx, "vol-create-as", pool, name,
+		fmt.Sprintf("%d", virtualSizeBytes),
+		"--format", "qcow2"); err != nil {
+		cleanupTmp()
+		return fmt.Errorf("vol-create-as %s/%s: %w", pool, name, err)
+	}
+	if _, err := c.runVirsh(ctx, "vol-upload", name, tmpFile, "--pool", pool); err != nil {
+		_, _ = c.runVirsh(ctx, "vol-delete", name, "--pool", pool)
+		cleanupTmp()
+		return fmt.Errorf("vol-upload %s/%s: %w", pool, name, err)
+	}
+	cleanupTmp()
+	return nil
 }
 
 // DeleteVolume deletes a volume from the specified pool.

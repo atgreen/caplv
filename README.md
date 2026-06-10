@@ -508,6 +508,74 @@ per controller process (keyed by the source spec digest), and on the
 libvirt host they live under `<hostPath>/<sha256>/{vmlinuz,initramfs.img}`
 so multiple machines reuse the same staged files.
 
+### Cluster-wide base image via URL (`baseImage`)
+
+Setting `LibvirtCluster.spec.baseImage` makes the controller responsible for
+distributing the cluster's root-disk qcow2 to every libvirt host. Hosts no
+longer need the qcow2 pre-staged via Ansible — they just need libvirt and a
+storage pool. The controller fetches the qcow2 once into its local cache
+and SCPs it onto each host the first time a machine targeting that host is
+scheduled; subsequent machines on the same host reuse the staged volume.
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtCluster
+metadata:
+  name: prod
+spec:
+  controlPlaneEndpoint:
+    host: 10.0.0.10
+    port: 6443
+  baseImage:
+    pool: default                       # libvirt storage pool on each host
+    volumeName: rhcos-4.18.qcow2        # the libvirt volume name the controller registers
+    source:
+      type: HTTPS                        # one of HTTPS, OCI, S3
+      https:
+        url: https://artifactory.example.com/rhcos/rhcos-4.18.qcow2.gz
+        sha256: <hex>                    # optional but strongly recommended for mutable URLs
+        credentialsSecretRef:
+          name: artifactory-creds        # optional
+```
+
+`LibvirtMachine.spec.rootDisk.baseImage` continues to refer to the staged
+volume by name (here `rhcos-4.18.qcow2`), so existing machine manifests work
+unchanged once you point them at the cluster-managed volume name.
+
+**Transports.** `HTTPS` is the typical mirror case; `OCI` reads a
+single-blob artifact (`oras push <ref> rhcos.qcow2:application/octet-stream`)
+with optional `blobTitle` disambiguation; `S3` reads a single object from
+any S3-compatible store. All three accept a `credentialsSecretRef` with the
+same secret shapes used by `bootArtifacts`: `kubernetes.io/dockerconfigjson`
+or `username`/`password` for OCI/HTTPS basic auth, and
+`accessKeyID`/`secretAccessKey`/`sessionToken` (or the `AWS_*` env-var
+spellings) for S3.
+
+**Transparent gzip.** Same magic-byte sniff used by `bootArtifacts`:
+`.qcow2.gz` mirrors are decompressed in-stream before the digest is
+computed. The `sha256` field describes the *decompressed* qcow2.
+
+**Cache.** The controller stores fetched payloads under
+`--base-image-cache-dir` (default `/var/cache/caplv/baseimages`), mounted as
+an `emptyDir` in the shipped manager Deployment. Files are content-addressed
+by sha256; concurrent fetches for the same artifact are coalesced via
+`singleflight`, and concurrent uploads of the same artifact to the same
+host are coalesced per-`(host, sha256)`. A controller restart re-downloads
+on first use after the restart.
+
+**Status.** The first machine on a fresh host blocks while the qcow2 is
+SCP'd over and registered with libvirt — for a ~1 GB image this is minutes,
+not seconds. Watch
+`LibvirtMachine.status.conditions[?(@.type=="BaseImageStaged")]`:
+
+| Status | Reason             | Meaning                                                 |
+| ------ | ------------------ | ------------------------------------------------------- |
+| False  | `BaseImageStaging` | qcow2 is being uploaded to this host                    |
+| True   | `BaseImageStaged`  | Volume present in `spec.baseImage.pool`, ready to clone |
+
+Subsequent machines on the same host hit the volume-already-present fast
+path and don't surface the condition at all.
+
 ### MachineHealthCheck (recommended)
 
 When the designed deletion path is followed (5-Spot → CAPI → CAPLV),
