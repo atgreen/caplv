@@ -125,7 +125,7 @@ func TestHTTPSResolver_Resolve(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &HTTPSResolver{Client: tls.Client()}
-			got, err := r.Resolve(context.Background(), tc.src)
+			got, err := r.Resolve(context.Background(), tc.src, nil)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -156,31 +156,24 @@ func TestHTTPSResolver_Resolve(t *testing.T) {
 
 func TestMultiResolver_DispatchesByType(t *testing.T) {
 	m := NewMultiResolver()
-	_, err := m.Resolve(context.Background(), infrav1.BootArtifactsSource{
-		Type: infrav1.BootArtifactsSourceOCI,
-		OCI:  &infrav1.OCIBootArtifactsSource{Reference: "example.com/foo:bar"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "OCI source not yet implemented") {
-		t.Fatalf("expected OCI not implemented error, got %v", err)
-	}
 
-	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{
-		Type: infrav1.BootArtifactsSourceS3,
-		S3: &infrav1.S3BootArtifactsSource{
-			Endpoint: "s3.example.com", Bucket: "b", KernelKey: "k", InitramfsKey: "i",
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "S3 source not yet implemented") {
-		t.Fatalf("expected S3 not implemented error, got %v", err)
-	}
-
-	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: "Garbage"})
+	_, err := m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: "Garbage"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("expected unsupported source type error, got %v", err)
 	}
 
-	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: infrav1.BootArtifactsSourceHTTPS})
+	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: infrav1.BootArtifactsSourceHTTPS}, nil)
 	if err == nil || !strings.Contains(err.Error(), "https is required") {
-		t.Fatalf("expected required-field error, got %v", err)
+		t.Fatalf("expected required-field error for HTTPS, got %v", err)
+	}
+
+	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: infrav1.BootArtifactsSourceOCI}, nil)
+	if err == nil || !strings.Contains(err.Error(), "oci is required") {
+		t.Fatalf("expected required-field error for OCI, got %v", err)
+	}
+
+	_, err = m.Resolve(context.Background(), infrav1.BootArtifactsSource{Type: infrav1.BootArtifactsSourceS3}, nil)
+	if err == nil || !strings.Contains(err.Error(), "s3 is required") {
+		t.Fatalf("expected required-field error for S3, got %v", err)
 	}
 }

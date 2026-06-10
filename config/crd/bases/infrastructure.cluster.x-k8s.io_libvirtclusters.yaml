@@ -92,10 +92,59 @@ spec:
                         - kernelURL
                         type: object
                       oci:
-                        description: OCIBootArtifactsSource fetches kernel+initramfs
-                          from an OCI artifact.
+                        description: |-
+                          OCIBootArtifactsSource fetches kernel+initramfs from a single OCI artifact.
+                          The artifact is expected to be an `oras push`-style manifest whose layers
+                          each carry an `org.opencontainers.image.title` annotation matching the file
+                          name. KernelLayerTitle and InitramfsLayerTitle select the two layers; the
+                          resolver fetches only those two blobs.
                         properties:
+                          credentialsSecretRef:
+                            description: |-
+                              CredentialsSecretRef references a Secret in the LibvirtCluster's
+                              namespace (or .namespace when set) containing registry credentials.
+                              The Secret is read in two formats, in order of preference:
+                                1. `.dockerconfigjson` (a kubernetes.io/dockerconfigjson Secret).
+                                2. plain `username` / `password` keys.
+                            properties:
+                              name:
+                                description: Name of the Secret.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the LibvirtCluster's namespace.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          initramfsLayerTitle:
+                            description: |-
+                              InitramfsLayerTitle is the org.opencontainers.image.title annotation
+                              that identifies the initramfs layer. Defaults to "initramfs.img".
+                            type: string
+                          initramfsSHA256:
+                            type: string
+                          insecureSkipTLSVerify:
+                            description: |-
+                              InsecureSkipTLSVerify disables TLS certificate verification on the
+                              registry endpoint. Intended only for self-signed dev registries.
+                            type: boolean
+                          kernelLayerTitle:
+                            description: |-
+                              KernelLayerTitle is the org.opencontainers.image.title annotation that
+                              identifies the kernel layer in the manifest. Defaults to "vmlinuz".
+                            type: string
+                          kernelSHA256:
+                            type: string
+                          plainHTTP:
+                            description: |-
+                              PlainHTTP allows non-TLS pulls from the registry. Intended only for
+                              in-cluster mirrors and development. Defaults to false.
+                            type: boolean
                           reference:
+                            description: Reference is the full OCI reference, e.g.
+                              "ghcr.io/example/boot:v1".
                             type: string
                         required:
                         - reference
@@ -106,16 +155,55 @@ spec:
                         properties:
                           bucket:
                             type: string
+                          credentialsSecretRef:
+                            description: |-
+                              CredentialsSecretRef references a Secret in the LibvirtCluster's
+                              namespace (or .namespace when set) containing static credentials.
+                              Recognized keys: `accessKeyID`, `secretAccessKey`, optional
+                              `sessionToken`. If unset, the resolver attempts anonymous reads.
+                            properties:
+                              name:
+                                description: Name of the Secret.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the LibvirtCluster's namespace.
+                                type: string
+                            required:
+                            - name
+                            type: object
                           endpoint:
+                            description: |-
+                              Endpoint is the S3 endpoint host[:port], e.g. "s3.amazonaws.com" or
+                              "minio.svc.cluster.local:9000".
                             type: string
                           initramfsKey:
                             type: string
                           initramfsSHA256:
                             type: string
+                          insecure:
+                            description: Insecure switches the endpoint to plain HTTP.
+                              Defaults to false.
+                            type: boolean
+                          insecureSkipTLSVerify:
+                            description: InsecureSkipTLSVerify disables TLS certificate
+                              verification.
+                            type: boolean
                           kernelKey:
                             type: string
                           kernelSHA256:
                             type: string
+                          region:
+                            description: |-
+                              Region is the bucket's region. Optional for MinIO/Ceph; required by
+                              AWS S3 (defaults to "us-east-1" if empty).
+                            type: string
+                          usePathStyle:
+                            description: |-
+                              UsePathStyle forces path-style addressing (bucket as URL path) rather
+                              than virtual-hosted style. Required by MinIO and some Ceph setups.
+                            type: boolean
                         required:
                         - bucket
                         - endpoint

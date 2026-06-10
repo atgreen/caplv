@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"path"
@@ -772,7 +774,12 @@ func (r *LibvirtMachineReconciler) reconcileBootArtifacts(ctx context.Context, r
 	}
 	ba := rc.libvirtCluster.Spec.BootArtifacts
 
-	artifacts, err := r.resolveCachedArtifacts(ctx, ba.Source)
+	creds, err := r.resolveBootArtifactsCredentials(ctx, rc.libvirtCluster, ba.Source)
+	if err != nil {
+		return fmt.Errorf("resolving boot artifacts credentials: %w", err)
+	}
+
+	artifacts, err := r.resolveCachedArtifacts(ctx, ba.Source, creds)
 	if err != nil {
 		return fmt.Errorf("resolving boot artifacts: %w", err)
 	}
@@ -798,17 +805,155 @@ func (r *LibvirtMachineReconciler) reconcileBootArtifacts(ctx context.Context, r
 func (r *LibvirtMachineReconciler) resolveCachedArtifacts(
 	ctx context.Context,
 	src infrav1.BootArtifactsSource,
+	creds *bootartifacts.Credentials,
 ) (*bootartifacts.Artifacts, error) {
 	key := bootArtifactsCacheKey(src)
 	if cached, ok := r.artifactCache.Load(key); ok {
 		return cached.(*bootartifacts.Artifacts), nil
 	}
-	artifacts, err := r.BootArtifactsResolver.Resolve(ctx, src)
+	artifacts, err := r.BootArtifactsResolver.Resolve(ctx, src, creds)
 	if err != nil {
 		return nil, err
 	}
 	r.artifactCache.Store(key, artifacts)
 	return artifacts, nil
+}
+
+// resolveBootArtifactsCredentials reads the optional Secret referenced by the
+// source spec and returns the credentials to hand to the Resolver. Returns
+// (nil, nil) when no secret is referenced.
+func (r *LibvirtMachineReconciler) resolveBootArtifactsCredentials(
+	ctx context.Context,
+	libvirtCluster *infrav1.LibvirtCluster,
+	src infrav1.BootArtifactsSource,
+) (*bootartifacts.Credentials, error) {
+	var ref *infrav1.BootArtifactsSecretReference
+	switch src.Type {
+	case infrav1.BootArtifactsSourceOCI:
+		if src.OCI != nil {
+			ref = src.OCI.CredentialsSecretRef
+		}
+	case infrav1.BootArtifactsSourceS3:
+		if src.S3 != nil {
+			ref = src.S3.CredentialsSecretRef
+		}
+	}
+	if ref == nil {
+		return nil, nil
+	}
+
+	ns := ref.Namespace
+	if ns == "" {
+		ns = libvirtCluster.Namespace
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, secret); err != nil {
+		return nil, fmt.Errorf("get secret %s/%s: %w", ns, ref.Name, err)
+	}
+
+	switch src.Type {
+	case infrav1.BootArtifactsSourceOCI:
+		return ociCredentialsFromSecret(secret, src.OCI.Reference)
+	case infrav1.BootArtifactsSourceS3:
+		return s3CredentialsFromSecret(secret)
+	default:
+		return nil, fmt.Errorf("credentials not supported for source type %q", src.Type)
+	}
+}
+
+// ociCredentialsFromSecret prefers a kubernetes.io/dockerconfigjson Secret
+// and falls back to plain username/password keys.
+func ociCredentialsFromSecret(secret *corev1.Secret, reference string) (*bootartifacts.Credentials, error) {
+	if raw, ok := secret.Data[corev1.DockerConfigJsonKey]; ok && len(raw) > 0 {
+		user, pass, err := lookupDockerConfigAuth(raw, reference)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", corev1.DockerConfigJsonKey, err)
+		}
+		return &bootartifacts.Credentials{Username: user, Password: pass}, nil
+	}
+	user := string(secret.Data["username"])
+	pass := string(secret.Data["password"])
+	if user == "" && pass == "" {
+		return nil, fmt.Errorf("secret has neither %s nor username/password keys", corev1.DockerConfigJsonKey)
+	}
+	return &bootartifacts.Credentials{Username: user, Password: pass}, nil
+}
+
+func s3CredentialsFromSecret(secret *corev1.Secret) (*bootartifacts.Credentials, error) {
+	keyID := firstNonEmptyString(secret.Data["accessKeyID"], secret.Data["AWS_ACCESS_KEY_ID"])
+	secretKey := firstNonEmptyString(secret.Data["secretAccessKey"], secret.Data["AWS_SECRET_ACCESS_KEY"])
+	sessionToken := firstNonEmptyString(secret.Data["sessionToken"], secret.Data["AWS_SESSION_TOKEN"])
+	if keyID == "" || secretKey == "" {
+		return nil, fmt.Errorf("secret missing accessKeyID and/or secretAccessKey")
+	}
+	return &bootartifacts.Credentials{
+		AccessKeyID:     keyID,
+		SecretAccessKey: secretKey,
+		SessionToken:    sessionToken,
+	}, nil
+}
+
+func firstNonEmptyString(candidates ...[]byte) string {
+	for _, c := range candidates {
+		if len(c) > 0 {
+			return string(c)
+		}
+	}
+	return ""
+}
+
+// lookupDockerConfigAuth parses a dockerconfigjson blob and returns the
+// username/password for the host of the supplied reference, falling back to
+// any registered entry if no host match is found.
+func lookupDockerConfigAuth(raw []byte, reference string) (string, string, error) {
+	var cfg struct {
+		Auths map[string]struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Auth     string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", "", err
+	}
+	host := registryHostFromReference(reference)
+	if entry, ok := cfg.Auths[host]; ok {
+		return decodeDockerAuth(entry.Username, entry.Password, entry.Auth)
+	}
+	for h, entry := range cfg.Auths {
+		if strings.Contains(h, host) || strings.Contains(host, h) {
+			return decodeDockerAuth(entry.Username, entry.Password, entry.Auth)
+		}
+	}
+	for _, entry := range cfg.Auths {
+		return decodeDockerAuth(entry.Username, entry.Password, entry.Auth)
+	}
+	return "", "", fmt.Errorf("no auth entries in dockerconfigjson")
+}
+
+func decodeDockerAuth(user, pass, encoded string) (string, string, error) {
+	if user != "" || pass != "" {
+		return user, pass, nil
+	}
+	if encoded == "" {
+		return "", "", fmt.Errorf("empty auth entry")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", fmt.Errorf("decode auth: %w", err)
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("malformed auth entry")
+	}
+	return parts[0], parts[1], nil
+}
+
+func registryHostFromReference(ref string) string {
+	if i := strings.Index(ref, "/"); i > 0 {
+		return ref[:i]
+	}
+	return ref
 }
 
 func (r *LibvirtMachineReconciler) ensureRemoteArtifact(
@@ -842,9 +987,14 @@ func bootArtifactsCacheKey(src infrav1.BootArtifactsSource) string {
 	}
 	if src.OCI != nil {
 		b.WriteString("oci.ref=" + src.OCI.Reference + "\n")
+		b.WriteString("oci.kernel.title=" + src.OCI.KernelLayerTitle + "\n")
+		b.WriteString("oci.initramfs.title=" + src.OCI.InitramfsLayerTitle + "\n")
+		b.WriteString("oci.kernel.sha256=" + src.OCI.KernelSHA256 + "\n")
+		b.WriteString("oci.initramfs.sha256=" + src.OCI.InitramfsSHA256 + "\n")
 	}
 	if src.S3 != nil {
 		b.WriteString("s3.endpoint=" + src.S3.Endpoint + "\n")
+		b.WriteString("s3.region=" + src.S3.Region + "\n")
 		b.WriteString("s3.bucket=" + src.S3.Bucket + "\n")
 		b.WriteString("s3.kernel=" + src.S3.KernelKey + "\n")
 		b.WriteString("s3.initramfs=" + src.S3.InitramfsKey + "\n")

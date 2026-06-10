@@ -90,26 +90,104 @@ type HTTPSBootArtifactsSource struct {
 	InitramfsSHA256 string `json:"initramfsSHA256,omitempty"`
 }
 
-// OCIBootArtifactsSource fetches kernel+initramfs from an OCI artifact.
+// OCIBootArtifactsSource fetches kernel+initramfs from a single OCI artifact.
+// The artifact is expected to be an `oras push`-style manifest whose layers
+// each carry an `org.opencontainers.image.title` annotation matching the file
+// name. KernelLayerTitle and InitramfsLayerTitle select the two layers; the
+// resolver fetches only those two blobs.
 type OCIBootArtifactsSource struct {
+	// Reference is the full OCI reference, e.g. "ghcr.io/example/boot:v1".
 	// +kubebuilder:validation:Required
 	Reference string `json:"reference"`
+
+	// KernelLayerTitle is the org.opencontainers.image.title annotation that
+	// identifies the kernel layer in the manifest. Defaults to "vmlinuz".
+	// +optional
+	KernelLayerTitle string `json:"kernelLayerTitle,omitempty"`
+
+	// InitramfsLayerTitle is the org.opencontainers.image.title annotation
+	// that identifies the initramfs layer. Defaults to "initramfs.img".
+	// +optional
+	InitramfsLayerTitle string `json:"initramfsLayerTitle,omitempty"`
+
+	// PlainHTTP allows non-TLS pulls from the registry. Intended only for
+	// in-cluster mirrors and development. Defaults to false.
+	// +optional
+	PlainHTTP bool `json:"plainHTTP,omitempty"`
+
+	// InsecureSkipTLSVerify disables TLS certificate verification on the
+	// registry endpoint. Intended only for self-signed dev registries.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// CredentialsSecretRef references a Secret in the LibvirtCluster's
+	// namespace (or .namespace when set) containing registry credentials.
+	// The Secret is read in two formats, in order of preference:
+	//   1. `.dockerconfigjson` (a kubernetes.io/dockerconfigjson Secret).
+	//   2. plain `username` / `password` keys.
+	// +optional
+	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// +optional
+	KernelSHA256 string `json:"kernelSHA256,omitempty"`
+	// +optional
+	InitramfsSHA256 string `json:"initramfsSHA256,omitempty"`
 }
 
 // S3BootArtifactsSource fetches kernel+initramfs from an S3-compatible store.
 type S3BootArtifactsSource struct {
+	// Endpoint is the S3 endpoint host[:port], e.g. "s3.amazonaws.com" or
+	// "minio.svc.cluster.local:9000".
 	// +kubebuilder:validation:Required
 	Endpoint string `json:"endpoint"`
+
+	// Region is the bucket's region. Optional for MinIO/Ceph; required by
+	// AWS S3 (defaults to "us-east-1" if empty).
+	// +optional
+	Region string `json:"region,omitempty"`
+
 	// +kubebuilder:validation:Required
 	Bucket string `json:"bucket"`
 	// +kubebuilder:validation:Required
 	KernelKey string `json:"kernelKey"`
 	// +kubebuilder:validation:Required
 	InitramfsKey string `json:"initramfsKey"`
+
+	// UsePathStyle forces path-style addressing (bucket as URL path) rather
+	// than virtual-hosted style. Required by MinIO and some Ceph setups.
+	// +optional
+	UsePathStyle bool `json:"usePathStyle,omitempty"`
+
+	// Insecure switches the endpoint to plain HTTP. Defaults to false.
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// InsecureSkipTLSVerify disables TLS certificate verification.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// CredentialsSecretRef references a Secret in the LibvirtCluster's
+	// namespace (or .namespace when set) containing static credentials.
+	// Recognized keys: `accessKeyID`, `secretAccessKey`, optional
+	// `sessionToken`. If unset, the resolver attempts anonymous reads.
+	// +optional
+	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+
 	// +optional
 	KernelSHA256 string `json:"kernelSHA256,omitempty"`
 	// +optional
 	InitramfsSHA256 string `json:"initramfsSHA256,omitempty"`
+}
+
+// BootArtifactsSecretReference points at a Secret holding pull credentials.
+type BootArtifactsSecretReference struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Namespace of the Secret. Defaults to the LibvirtCluster's namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // LibvirtClusterStatus defines the observed state of LibvirtCluster.

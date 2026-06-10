@@ -47,7 +47,7 @@ func NewHTTPSResolver() *HTTPSResolver {
 
 // Resolve fetches both the kernel and initramfs, computes their sha256
 // digests, and verifies any user-supplied digests.
-func (r *HTTPSResolver) Resolve(ctx context.Context, src infrav1.BootArtifactsSource) (*Artifacts, error) {
+func (r *HTTPSResolver) Resolve(ctx context.Context, src infrav1.BootArtifactsSource, _ *Credentials) (*Artifacts, error) {
 	if src.HTTPS == nil {
 		return nil, fmt.Errorf("https source not set")
 	}

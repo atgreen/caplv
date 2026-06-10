@@ -395,6 +395,111 @@ spec:
         dynatrace: "true"
 ```
 
+### Fast first boot with `bootArtifacts` (direct kernel boot)
+
+The default first-boot path delivers ignition via QEMU `fw_cfg`. That works
+on every OS image but has a known kernel issue: `qemu_fw_cfg` does O(n²)
+offset reads, which adds tens of seconds of wall-clock time for multi-MB
+ignition payloads (see [kernel bug #218394](https://bugzilla.kernel.org/show_bug.cgi?id=218394)).
+Setting `LibvirtCluster.spec.bootArtifacts` switches first-boot ignition
+delivery to libvirt direct-kernel-boot plus a virtio-blk ignition disk:
+
+- The controller fetches kernel + initramfs from a configured source.
+- Blobs are content-addressed on the libvirt host under `<hostPath>/<sha256>/`
+  and reused across machines and reconciles.
+- The domain XML is rendered with `<kernel>` / `<initrd>` / `<cmdline>` plus
+  a virtio-blk disk with `serial=ignition` carrying the rendered config.
+
+Three transports are supported: **HTTPS**, **OCI** (single artifact with two
+layers), and **S3** (any S3-compatible store).
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtCluster
+metadata:
+  name: prod
+spec:
+  controlPlaneEndpoint:
+    host: 10.0.0.10
+    port: 6443
+  bootArtifacts:
+    hostPath: /var/lib/caplv/boot      # cache dir on each libvirt host
+    kernelArgs: |-
+      ignition.platform.id=metal
+      ignition.config.url=oem:/dev/disk/by-id/virtio-ignition
+      console=ttyS0
+    source:
+      type: HTTPS                       # one of: HTTPS, OCI, S3
+      https:
+        kernelURL:       https://artifacts.example.com/rhcos/vmlinuz
+        initramfsURL:    https://artifacts.example.com/rhcos/initramfs.img
+        kernelSHA256:    <hex>          # optional integrity check
+        initramfsSHA256: <hex>
+```
+
+**OCI source.** Push a single `oras`-style artifact with the kernel and
+initramfs as two layers, identified by the
+`org.opencontainers.image.title` annotation:
+
+```bash
+oras push ghcr.io/example/boot:v1 \
+    vmlinuz:application/octet-stream \
+    initramfs.img:application/octet-stream
+```
+
+```yaml
+source:
+  type: OCI
+  oci:
+    reference: ghcr.io/example/boot:v1
+    # Optional layer-title overrides (defaults shown):
+    # kernelLayerTitle:    vmlinuz
+    # initramfsLayerTitle: initramfs.img
+    # plainHTTP:            false       # for in-cluster mirrors
+    # insecureSkipTLSVerify: false      # dev/self-signed only
+    credentialsSecretRef:                # optional for private registries
+      name: ghcr-pull-secret
+    kernelSHA256:    <hex>               # optional
+    initramfsSHA256: <hex>
+```
+
+The credentials secret can be either a `kubernetes.io/dockerconfigjson`
+Secret (preferred) or a Secret with plain `username` / `password` keys. It
+is read from the LibvirtCluster's namespace unless
+`credentialsSecretRef.namespace` is set.
+
+**S3 source.** Works with AWS S3, MinIO, and Ceph RGW:
+
+```yaml
+source:
+  type: S3
+  s3:
+    endpoint:     s3.amazonaws.com       # host[:port]
+    region:       us-east-1              # required by AWS, optional elsewhere
+    bucket:       my-boot-artifacts
+    kernelKey:    rhcos/vmlinuz
+    initramfsKey: rhcos/initramfs.img
+    # usePathStyle:           true       # required by MinIO/Ceph
+    # insecure:               false      # plain HTTP endpoint
+    # insecureSkipTLSVerify:  false
+    credentialsSecretRef:                # optional for private buckets
+      name: s3-read-creds
+    kernelSHA256:    <hex>               # optional
+    initramfsSHA256: <hex>
+```
+
+The S3 credentials Secret recognizes either:
+- `accessKeyID` / `secretAccessKey` / `sessionToken` (preferred), or
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`.
+
+Leaving `credentialsSecretRef` unset means anonymous reads.
+
+**Caching and integrity.** Optional `*SHA256` fields are verified after
+download. Bytes are cached in-memory per controller process (keyed by the
+source spec digest), and on the libvirt host they live under
+`<hostPath>/<sha256>/{vmlinuz,initramfs.img}` so multiple machines reuse the
+same staged files.
+
 ### MachineHealthCheck (recommended)
 
 When the designed deletion path is followed (5-Spot → CAPI → CAPLV),
