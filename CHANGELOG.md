@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Event-driven versioning (semver for releases, date-based for main, pr-NUMBER for PRs)
 
 ### Changed
+- `bootArtifacts` resolvers (HTTPS, OCI, S3) now transparently decompress gzip-wrapped payloads, detected by the `1f 8b` magic bytes (no naming convention or media-type required). The `kernelSHA256` / `initramfsSHA256` integrity checks and the on-host content-addressed cache path both describe the *decompressed* payload, so a `.gz` mirror in Artifactory and a raw `vmlinuz` produce identical digests and reuse the same staged file.
 - Consolidated separate CI workflows (test, lint, e2e, image) into a single unified build pipeline
 - Container images now pushed to GHCR with consistent tagging across all event types
 - Release workflow triggers on `v*` tag push and creates a DRAFT release for the maintainer to review before publishing (matches the CAPI ecosystem convention used by cluster-api-provider-vsphere); the previous flow ran on release-published, which left the release public if any earlier job failed

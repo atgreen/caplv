@@ -494,11 +494,19 @@ The S3 credentials Secret recognizes either:
 
 Leaving `credentialsSecretRef` unset means anonymous reads.
 
+**Transport gzip.** Artifacts that arrive gzip-wrapped (detected by the
+`1f 8b` magic bytes — no naming convention required) are transparently
+decompressed before the sha256 is computed. So a `.gz`-wrapped kernel in
+Artifactory, an OCI layer pushed with `application/gzip`, and a raw
+`vmlinuz` all produce the same digest and the same on-host cache path.
+The `*SHA256` fields you configure describe the *decompressed* payload —
+i.e. what the kernel actually boots.
+
 **Caching and integrity.** Optional `*SHA256` fields are verified after
-download. Bytes are cached in-memory per controller process (keyed by the
-source spec digest), and on the libvirt host they live under
-`<hostPath>/<sha256>/{vmlinuz,initramfs.img}` so multiple machines reuse the
-same staged files.
+download (and decompression, if applicable). Bytes are cached in-memory
+per controller process (keyed by the source spec digest), and on the
+libvirt host they live under `<hostPath>/<sha256>/{vmlinuz,initramfs.img}`
+so multiple machines reuse the same staged files.
 
 ### MachineHealthCheck (recommended)
 

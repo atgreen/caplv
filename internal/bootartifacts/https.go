@@ -89,12 +89,16 @@ func (r *HTTPSResolver) fetchOne(ctx context.Context, url, expectedDigest string
 		return nil, "", fmt.Errorf("get %s: unexpected status %d", url, resp.StatusCode)
 	}
 
-	hasher := sha256.New()
-	body, err := io.ReadAll(io.TeeReader(resp.Body, hasher))
+	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s: %w", url, err)
 	}
-	digest := hex.EncodeToString(hasher.Sum(nil))
+	body, err := decompressIfGzip(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("decompress %s: %w", url, err)
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
 
 	if expectedDigest != "" && !strings.EqualFold(digest, expectedDigest) {
 		return nil, "", fmt.Errorf("sha256 mismatch for %s: got %s, expected %s", url, digest, expectedDigest)

@@ -174,12 +174,16 @@ func fetchLayer(ctx context.Context, repo *remote.Repository, desc ocispec.Descr
 	}
 	defer func() { _ = rc.Close() }()
 
-	hasher := sha256.New()
-	body, err := io.ReadAll(io.TeeReader(rc, hasher))
+	raw, err := io.ReadAll(rc)
 	if err != nil {
 		return nil, "", fmt.Errorf("read blob %s: %w", desc.Digest, err)
 	}
-	digest := hex.EncodeToString(hasher.Sum(nil))
+	body, err := decompressIfGzip(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("decompress blob %s: %w", desc.Digest, err)
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
 
 	if expectedSHA256 != "" && !strings.EqualFold(digest, expectedSHA256) {
 		return nil, "", fmt.Errorf("sha256 mismatch for layer %s: got %s, expected %s", desc.Digest, digest, expectedSHA256)

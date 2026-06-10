@@ -104,12 +104,16 @@ func fetchObject(ctx context.Context, client *minio.Client, bucket, key, expecte
 	}
 	defer func() { _ = obj.Close() }()
 
-	hasher := sha256.New()
-	body, err := io.ReadAll(io.TeeReader(obj, hasher))
+	raw, err := io.ReadAll(obj)
 	if err != nil {
 		return nil, "", fmt.Errorf("read s3://%s/%s: %w", bucket, key, err)
 	}
-	digest := hex.EncodeToString(hasher.Sum(nil))
+	body, err := decompressIfGzip(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("decompress s3://%s/%s: %w", bucket, key, err)
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
 
 	if expectedSHA256 != "" && !strings.EqualFold(digest, expectedSHA256) {
 		return nil, "", fmt.Errorf("sha256 mismatch for s3://%s/%s: got %s, expected %s", bucket, key, digest, expectedSHA256)
