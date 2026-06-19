@@ -536,6 +536,7 @@ spec:
         sha256: <hex>                    # optional but strongly recommended for mutable URLs
         credentialsSecretRef:
           name: artifactory-creds        # optional
+        # insecureSkipTLSVerify: false   # dev/self-signed only; prefer SSL_CERT_FILE (see below)
 ```
 
 `LibvirtMachine.spec.rootDisk.baseImage` continues to refer to the staged
@@ -554,6 +555,54 @@ spellings) for S3.
 **Transparent gzip.** Same magic-byte sniff used by `bootArtifacts`:
 `.qcow2.gz` mirrors are decompressed in-stream before the digest is
 computed. The `sha256` field describes the *decompressed* qcow2.
+
+**HTTPS trust (private CAs).** The `HTTPS` transport verifies the server
+certificate against the controller container's trust store. When the mirror
+is served by an internal Artifactory (or any endpoint) fronted by a private
+or corporate CA, the fetch fails with `x509: certificate signed by unknown
+authority`. Rather than rebuild the controller image, mount the CA bundle
+and point Go's `SSL_CERT_FILE` at it — the controller's HTTPS client honors
+it automatically:
+
+```bash
+# CA certs are not secret, so a ConfigMap is fine.
+oc -n <controller-namespace> create configmap caplv-ca \
+  --from-file=ca-bundle.crt=/path/to/ca-bundle.pem
+```
+
+Add the mount and env var to the manager Deployment (works with the shipped
+`readOnlyRootFilesystem: true` security context, since the bundle is a
+read-only volume rather than a write into `/etc/pki`):
+
+```yaml
+        env:
+        - name: SSL_CERT_FILE
+          value: /etc/pki/caplv/ca-bundle.crt
+        volumeMounts:
+        - name: caplv-ca
+          mountPath: /etc/pki/caplv
+          readOnly: true
+      volumes:
+      - name: caplv-ca
+        configMap:
+          name: caplv-ca
+```
+
+`SSL_CERT_FILE` *replaces* the system bundle rather than adding to it. If the
+controller also fetches from public-CA endpoints, concatenate your CA with
+the system bundle into the ConfigMap (`cat ca.pem /etc/pki/tls/certs/ca-bundle.crt`),
+or use `SSL_CERT_DIR` to point at a directory of trusted certs instead. On
+OpenShift you can also have the cluster populate the bundle for you by
+creating an empty ConfigMap labeled
+`config.openshift.io/inject-trusted-cabundle: "true"` and mounting it the
+same way — useful when the CA is already in the cluster's proxy/additional
+trust bundle.
+
+As a last resort for development or self-signed endpoints, the `HTTPS` source
+also accepts `insecureSkipTLSVerify: true` (matching the `OCI` and `S3`
+transports), which disables certificate verification entirely. Prefer the
+`SSL_CERT_FILE` approach above for anything production — it keeps verification
+on.
 
 **Cache.** The controller stores fetched payloads under
 `--base-image-cache-dir` (default `/var/cache/caplv/baseimages`), mounted as

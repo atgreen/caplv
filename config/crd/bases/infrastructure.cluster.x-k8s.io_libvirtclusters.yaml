@@ -92,6 +92,13 @@ spec:
                             required:
                             - name
                             type: object
+                          insecureSkipTLSVerify:
+                            description: |-
+                              InsecureSkipTLSVerify disables TLS certificate verification when
+                              fetching the qcow2. Intended only for development or self-signed
+                              endpoints; prefer adding the serving CA to the controller's trust
+                              store (e.g. via SSL_CERT_FILE) for production mirrors.
+                            type: boolean
                           sha256:
                             description: |-
                               SHA256 of the decompressed qcow2. Optional but strongly recommended

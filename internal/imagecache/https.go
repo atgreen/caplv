@@ -18,6 +18,7 @@ package imagecache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -27,6 +28,9 @@ import (
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
 )
+
+// httpFetchTimeout is sized for ~1 GB qcow2 payloads on cold caches.
+const httpFetchTimeout = 30 * time.Minute
 
 // HTTPSResolver streams a qcow2 over HTTPS (or HTTP — the controller does
 // not refuse plain HTTP for base images, since some on-prem Artifactory
@@ -39,7 +43,21 @@ type HTTPSResolver struct {
 // for ~1 GB qcow2 payloads on cold caches.
 func NewHTTPSResolver() *HTTPSResolver {
 	return &HTTPSResolver{
-		Client: &http.Client{Timeout: 30 * time.Minute},
+		Client: &http.Client{Timeout: httpFetchTimeout},
+	}
+}
+
+// insecureClient returns a client that skips TLS verification, used only when
+// the source opts in via InsecureSkipTLSVerify. Built per-call so the secure
+// default client is never mutated.
+func insecureClient() *http.Client {
+	return &http.Client{
+		Timeout: httpFetchTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // user-opted-in for dev endpoints
+			},
+		},
 	}
 }
 
@@ -63,7 +81,12 @@ func (r *HTTPSResolver) Open(ctx context.Context, src infrav1.BaseImageSource, c
 		req.Header.Set("Authorization", "Basic "+auth)
 	}
 
-	resp, err := r.Client.Do(req)
+	client := r.Client
+	if src.HTTPS.InsecureSkipTLSVerify {
+		client = insecureClient()
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", url, err)
 	}

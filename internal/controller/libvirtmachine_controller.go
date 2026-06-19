@@ -546,6 +546,18 @@ func (r *LibvirtMachineReconciler) ensureBootstrapData(
 		return &ctrl.Result{}, fmt.Errorf("failed to check bootstrap secret: %w", err)
 	}
 
+	// Bootstrap data is available. Flip the condition to True so the positive
+	// state is observable; otherwise the False condition set on an earlier
+	// reconcile (before the secret existed) lingers and misleads operators
+	// into thinking the machine is still blocked on bootstrap.
+	apimeta.SetStatusCondition(&libvirtMachine.Status.Conditions, metav1.Condition{
+		Type:               infrav1.BootstrapDataReadyCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             infrav1.ReasonBootstrapDataReady,
+		Message:            "Bootstrap data secret is available",
+		ObservedGeneration: libvirtMachine.Generation,
+	})
+
 	return nil, nil
 }
 

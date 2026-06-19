@@ -53,6 +53,7 @@ const (
 	ReasonClusterReady        = "ClusterReady"
 	ReasonNodeLabelled        = "NodeLabelled"
 	ReasonBaseImageStaged     = "BaseImageStaged"
+	ReasonBootstrapDataReady  = "BootstrapDataReady"
 
 	// Reasons — cleanup
 	ReasonCleanupStalled   = "CleanupStalled"

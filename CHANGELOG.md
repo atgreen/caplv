@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release artifacts follow the [CAPI clusterctl provider contract](https://cluster-api.sigs.k8s.io/clusterctl/provider-contract.html): `infrastructure-components.yaml`, `metadata.yaml`, and `cluster-template.yaml` are published as individual top-level release assets (replacing the `deploy-manifests.tar.gz` bundle), so the provider can be consumed directly by `clusterctl init`, `clusterctl generate cluster`, ArgoCD, and other tooling that expects per-file URLs
 - Multi-architecture container builds (linux/amd64, linux/arm64)
 - Event-driven versioning (semver for releases, date-based for main, pr-NUMBER for PRs)
+- `LibvirtCluster.spec.baseImage.source.https.insecureSkipTLSVerify` — opt-in TLS verification bypass for the HTTPS base-image fetch, matching the existing knob on the `OCI` and `S3` transports. Intended only for dev/self-signed endpoints; for production mirrors fronted by a private CA, prefer adding the serving CA to the controller's trust store via `SSL_CERT_FILE` (documented under "HTTPS trust" in the README), which keeps verification on.
 
 ### Changed
 - `bootArtifacts` resolvers (HTTPS, OCI, S3) now transparently decompress gzip-wrapped payloads, detected by the `1f 8b` magic bytes (no naming convention or media-type required). The `kernelSHA256` / `initramfsSHA256` integrity checks and the on-host content-addressed cache path both describe the *decompressed* payload, so a `.gz` mirror in Artifactory and a raw `vmlinuz` produce identical digests and reuse the same staged file.
@@ -33,5 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make build-installer` stages `config/` in a build dir before running `kustomize edit set image`, so the checked-in `config/manager/kustomization.yaml` is no longer mutated as a side effect of producing a release manifest locally
 
 ### Fixed
+- `BootstrapDataReady` condition on `LibvirtMachine` is now set to `True` once the bootstrap data secret is available. Previously the condition was only ever set to `False` — its success path never flipped it — so the `False`/`BootstrapDataNotReady` state set on the first reconcile (before the bootstrap provider had created the secret) lingered indefinitely, misleading operators into thinking a fully-provisioning machine was still blocked on bootstrap.
 - E2E CI failure: set CONTAINER_TOOL=docker for GitHub Actions runners
 - All golangci-lint issues (gofmt, modernize, unparam, unused)

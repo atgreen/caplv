@@ -97,6 +97,13 @@ type HTTPSBaseImageSource struct {
 	// HTTP Basic auth, or the kubernetes.io/dockerconfigjson layout.
 	// +optional
 	CredentialsSecretRef *BootArtifactsSecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// InsecureSkipTLSVerify disables TLS certificate verification when
+	// fetching the qcow2. Intended only for development or self-signed
+	// endpoints; prefer adding the serving CA to the controller's trust
+	// store (e.g. via SSL_CERT_FILE) for production mirrors.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
 }
 
 // OCIBaseImageSource fetches the qcow2 from a single-blob OCI artifact.
