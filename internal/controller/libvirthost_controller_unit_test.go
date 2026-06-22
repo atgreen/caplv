@@ -225,3 +225,52 @@ func TestHostReconcile_AllSucceeds_SetsReady(t *testing.T) {
 		t.Errorf("expected reason ConnectionSucceeded, got %s", updated.Status.Conditions[0].Reason)
 	}
 }
+
+// A host where libvirt answers but the QEMU/KVM hypervisor is missing (partial
+// install) must be marked not-ready with HypervisorUnavailable, not pass as
+// healthy and fail later at machine provision.
+func TestHostReconcile_HypervisorUnavailable_SetsNotReady(t *testing.T) {
+	s := testScheme(t)
+	host := &infrav1.LibvirtHost{
+		ObjectMeta: metav1.ObjectMeta{Name: "host1", Namespace: "default"},
+		Spec: infrav1.LibvirtHostSpec{
+			URI:       "qemu+ssh://root@host/system",
+			SecretRef: &infrav1.SecretReference{Name: "ssh-key"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ssh-key", Namespace: "default"},
+		Data:       map[string][]byte{"ssh-privatekey": []byte("fake-key")},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(host, secret).WithStatusSubresource(host).Build()
+
+	r := &LibvirtHostReconciler{
+		Client: k8sClient,
+		Scheme: s,
+		SSHClientFactory: func(_ context.Context, _ *infrav1.LibvirtHost, _ *corev1.Secret) (*gossh.Client, error) {
+			return nil, nil
+		},
+		LibvirtClientFactory: func(_ *gossh.Client) libvirt.Client {
+			return &libvirt.MockClient{
+				PingFn:             func(_ context.Context) error { return nil },
+				VerifyHypervisorFn: func(_ context.Context) error { return fmt.Errorf("failed to get emulator capabilities") },
+				CloseFn:            func() error { return nil },
+			}
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "host1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	updated := &infrav1.LibvirtHost{}
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "host1", Namespace: "default"}, updated)
+	if updated.Status.Ready {
+		t.Error("expected Ready=false when the hypervisor is unavailable")
+	}
+	if updated.Status.Conditions[0].Reason != infrav1.ReasonHypervisorUnavailable {
+		t.Errorf("expected reason HypervisorUnavailable, got %s", updated.Status.Conditions[0].Reason)
+	}
+}

@@ -149,6 +149,17 @@ func (c *VirshClient) Ping(ctx context.Context) error {
 	return err
 }
 
+// VerifyHypervisor confirms the KVM hypervisor stack is installed and usable.
+// CAPLV defines domains as <domain type='kvm'>, so it queries the KVM driver's
+// domain capabilities directly: `virsh domcapabilities --virttype kvm` fails
+// when the QEMU/KVM driver or emulator is absent (e.g. qemu-kvm /
+// libvirt-daemon-driver-qemu not installed) or KVM is otherwise unavailable —
+// a partial install that `virsh version`/`nodeinfo` would happily answer.
+func (c *VirshClient) VerifyHypervisor(ctx context.Context) error {
+	_, err := c.runVirsh(ctx, "domcapabilities", "--virttype", "kvm")
+	return err
+}
+
 // GetNodeInfo returns host hardware information from virsh nodeinfo.
 func (c *VirshClient) GetNodeInfo(ctx context.Context) (*NodeInfo, error) {
 	output, err := c.runVirsh(ctx, "nodeinfo")
