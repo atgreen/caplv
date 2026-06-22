@@ -65,6 +65,7 @@ spec:
                       Pool is the libvirt storage pool name on each host where the image is
                       staged. Must exist on every LibvirtHost in the cluster.
                     minLength: 1
+                    pattern: ^[A-Za-z0-9_.:-]+$
                     type: string
                   source:
                     description: |-
@@ -223,6 +224,7 @@ spec:
                       VolumeName is the libvirt volume name the staged image will register as
                       inside Pool. Use the same value in LibvirtMachine.spec.rootDisk.baseImage.
                     minLength: 1
+                    pattern: ^[A-Za-z0-9_.:-]+$
                     type: string
                 required:
                 - pool
@@ -240,6 +242,7 @@ spec:
                     description: |-
                       HostPath is the directory on each libvirt host where kernel/initramfs are cached.
                       Files land at <HostPath>/<sha256>/vmlinuz and <HostPath>/<sha256>/initramfs.img.
+                    pattern: ^/[A-Za-z0-9._/-]+$
                     type: string
                   kernelArgs:
                     description: |-

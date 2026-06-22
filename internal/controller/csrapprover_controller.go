@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"slices"
 	"strings"
 
 	certificatesv1 "k8s.io/api/certificates/v1"
@@ -34,6 +35,15 @@ import (
 
 	infrav1 "github.com/atgreen/caplv/api/v1alpha1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+)
+
+const (
+	kubeletClientSignerName   = "kubernetes.io/kube-apiserver-client-kubelet"
+	kubeletServingSignerName  = "kubernetes.io/kubelet-serving"
+	systemNodePrefix          = "system:node:"
+	systemNodesGroup          = "system:nodes"
+	systemBootstrappersGroup  = "system:bootstrappers"
+	openshiftNodeBootstrapper = "system:serviceaccount:openshift-machine-config-operator:node-bootstrapper"
 )
 
 // CSRApproverReconciler watches for pending CertificateSigningRequests and
@@ -66,8 +76,8 @@ func (r *CSRApproverReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Only handle kubelet client and serving CSRs.
-	if csr.Spec.SignerName != "kubernetes.io/kube-apiserver-client-kubelet" &&
-		csr.Spec.SignerName != "kubernetes.io/kubelet-serving" {
+	if csr.Spec.SignerName != kubeletClientSignerName &&
+		csr.Spec.SignerName != kubeletServingSignerName {
 		return ctrl.Result{}, nil
 	}
 
@@ -79,6 +89,10 @@ func (r *CSRApproverReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Check if this node name matches a CAPI Machine backed by a LibvirtMachine.
 	if !r.isLibvirtManagedNode(ctx, nodeName) {
+		return ctrl.Result{}, nil
+	}
+	if !shouldApproveKubeletCSR(csr, nodeName) {
+		log.Info("CSR did not match CAPLV kubelet approval policy", "node", nodeName, "signer", csr.Spec.SignerName)
 		return ctrl.Result{}, nil
 	}
 
@@ -145,27 +159,119 @@ func (r *CSRApproverReconciler) isLibvirtManagedNode(ctx context.Context, nodeNa
 // the CSR request (bootstrap CSRs use the node-bootstrapper SA as
 // the username but set CN=system:node:<nodename> in the request).
 func nodeNameFromCSR(csr *certificatesv1.CertificateSigningRequest) string {
-	const prefix = "system:node:"
-
 	// Check username first (serving and renewal CSRs).
-	if strings.HasPrefix(csr.Spec.Username, prefix) {
-		return csr.Spec.Username[len(prefix):]
+	if strings.HasPrefix(csr.Spec.Username, systemNodePrefix) {
+		return csr.Spec.Username[len(systemNodePrefix):]
 	}
 
 	// Fall back to parsing the CSR request CN (bootstrap CSRs).
-	block, _ := pem.Decode(csr.Spec.Request)
-	if block == nil {
-		return ""
-	}
-	req, err := x509.ParseCertificateRequest(block.Bytes)
+	req, err := parseCSRRequest(csr)
 	if err != nil {
 		return ""
 	}
-	if strings.HasPrefix(req.Subject.CommonName, prefix) {
-		return req.Subject.CommonName[len(prefix):]
+	if strings.HasPrefix(req.Subject.CommonName, systemNodePrefix) {
+		return req.Subject.CommonName[len(systemNodePrefix):]
 	}
 
 	return ""
+}
+
+func shouldApproveKubeletCSR(csr *certificatesv1.CertificateSigningRequest, nodeName string) bool {
+	req, err := parseCSRRequest(csr)
+	if err != nil {
+		return false
+	}
+	if req.Subject.CommonName != systemNodePrefix+nodeName || !containsString(req.Subject.Organization, systemNodesGroup) {
+		return false
+	}
+
+	switch csr.Spec.SignerName {
+	case kubeletClientSignerName:
+		return validKubeletClientRequester(csr, nodeName) && hasOnlyUsages(csr.Spec.Usages,
+			certificatesv1.UsageDigitalSignature,
+			certificatesv1.UsageKeyEncipherment,
+			certificatesv1.UsageClientAuth,
+		) && containsUsage(csr.Spec.Usages, certificatesv1.UsageClientAuth)
+	case kubeletServingSignerName:
+		return validKubeletServingRequester(csr, nodeName) &&
+			validKubeletServingSANs(req, nodeName) &&
+			hasOnlyUsages(csr.Spec.Usages,
+				certificatesv1.UsageDigitalSignature,
+				certificatesv1.UsageKeyEncipherment,
+				certificatesv1.UsageServerAuth,
+			) &&
+			containsUsage(csr.Spec.Usages, certificatesv1.UsageServerAuth)
+	default:
+		return false
+	}
+}
+
+func parseCSRRequest(csr *certificatesv1.CertificateSigningRequest) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode(csr.Spec.Request)
+	if block == nil {
+		return nil, fmt.Errorf("CSR request is not PEM encoded")
+	}
+	return x509.ParseCertificateRequest(block.Bytes)
+}
+
+func validKubeletClientRequester(csr *certificatesv1.CertificateSigningRequest, nodeName string) bool {
+	if csr.Spec.Username == systemNodePrefix+nodeName && containsString(csr.Spec.Groups, systemNodesGroup) {
+		return true
+	}
+	if strings.HasPrefix(csr.Spec.Username, "system:bootstrap:") && containsGroupPrefix(csr.Spec.Groups, systemBootstrappersGroup) {
+		return true
+	}
+	if csr.Spec.Username == openshiftNodeBootstrapper {
+		return true
+	}
+	return false
+}
+
+func validKubeletServingRequester(csr *certificatesv1.CertificateSigningRequest, nodeName string) bool {
+	return csr.Spec.Username == systemNodePrefix+nodeName && containsString(csr.Spec.Groups, systemNodesGroup)
+}
+
+func validKubeletServingSANs(req *x509.CertificateRequest, nodeName string) bool {
+	if len(req.EmailAddresses) > 0 || len(req.URIs) > 0 {
+		return false
+	}
+	for _, dnsName := range req.DNSNames {
+		if dnsName != nodeName && !strings.HasPrefix(dnsName, nodeName+".") {
+			return false
+		}
+	}
+	for _, ip := range req.IPAddresses {
+		if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
+			return false
+		}
+	}
+	return true
+}
+
+func hasOnlyUsages(actual []certificatesv1.KeyUsage, allowed ...certificatesv1.KeyUsage) bool {
+	for _, usage := range actual {
+		if !containsUsage(allowed, usage) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsUsage(usages []certificatesv1.KeyUsage, usage certificatesv1.KeyUsage) bool {
+	return slices.Contains(usages, usage)
+}
+
+func containsString(values []string, value string) bool {
+	return slices.Contains(values, value)
+}
+
+func containsGroupPrefix(groups []string, prefix string) bool {
+	for _, group := range groups {
+		if group == prefix || strings.HasPrefix(group, prefix+":") {
+			return true
+		}
+	}
+	return false
 }
 
 func isApprovedOrDenied(csr *certificatesv1.CertificateSigningRequest) bool {

@@ -61,7 +61,7 @@ func (c *VirshClient) WithLogger(log logr.Logger) *VirshClient {
 
 func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, error) {
 	cmdArgs := append([]string{"virsh", "-c", "qemu:///system"}, args...)
-	cmd := strings.Join(cmdArgs, " ")
+	cmd := shellJoin(cmdArgs...)
 	c.log.V(2).Info("Executing virsh command", "cmd", cmd)
 
 	if c.localMode {
@@ -235,7 +235,7 @@ func (c *VirshClient) DefineDomain(ctx context.Context, xmlDef string) (*DomainI
 		return nil, fmt.Errorf("ssh session: %w", err)
 	}
 	session.Stdin = strings.NewReader(xmlDef)
-	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
+	if err := session.Run(fmt.Sprintf("cat > %s", shellQuote(tmpFile))); err != nil {
 		_ = session.Close()
 		return nil, fmt.Errorf("upload domain XML: %w", err)
 	}
@@ -250,7 +250,7 @@ func (c *VirshClient) DefineDomain(ctx context.Context, xmlDef string) (*DomainI
 	// Clean up temp file via SSH.
 	cleanSession, _ := c.sshClient.NewSession()
 	if cleanSession != nil {
-		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", tmpFile))
+		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", shellQuote(tmpFile)))
 		_ = cleanSession.Close()
 	}
 
@@ -309,12 +309,12 @@ func (c *VirshClient) PoolExists(ctx context.Context, name string) (bool, error)
 // when empty the kernel default (50% of physical RAM) applies.
 func (c *VirshClient) CreateTmpfsPool(ctx context.Context, name, path, size string) error {
 	// Create directory and mount tmpfs (requires sudo).
-	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", path)); err != nil {
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", shellQuote(path))); err != nil {
 		return fmt.Errorf("mkdir failed: %w", err)
 	}
-	mountCmd := fmt.Sprintf("sudo mount -t tmpfs tmpfs %s", path)
+	mountCmd := fmt.Sprintf("sudo mount -t tmpfs tmpfs %s", shellQuote(path))
 	if size != "" {
-		mountCmd = fmt.Sprintf("sudo mount -t tmpfs -o size=%s tmpfs %s", size, path)
+		mountCmd = fmt.Sprintf("sudo mount -t tmpfs -o %s tmpfs %s", shellQuote("size="+size), shellQuote(path))
 	}
 	if err := c.runSSH(ctx, mountCmd); err != nil {
 		return fmt.Errorf("tmpfs mount failed: %w", err)
@@ -349,8 +349,8 @@ func (c *VirshClient) DestroyPool(ctx context.Context, name string) error {
 
 	// Unmount tmpfs and remove directory (requires sudo).
 	if poolPath != "" {
-		_ = c.runSSH(ctx, fmt.Sprintf("sudo umount %s 2>/dev/null", poolPath))
-		_ = c.runSSH(ctx, fmt.Sprintf("sudo rmdir %s 2>/dev/null", poolPath))
+		_ = c.runSSH(ctx, fmt.Sprintf("sudo umount %s 2>/dev/null", shellQuote(poolPath)))
+		_ = c.runSSH(ctx, fmt.Sprintf("sudo rmdir %s 2>/dev/null", shellQuote(poolPath)))
 	}
 	return nil
 }
@@ -412,7 +412,7 @@ func (c *VirshClient) UploadVolumeFromBytes(ctx context.Context, pool, name stri
 		return fmt.Errorf("ssh session: %w", err)
 	}
 	session.Stdin = bytes.NewReader(data)
-	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
+	if err := session.Run(fmt.Sprintf("cat > %s", shellQuote(tmpFile))); err != nil {
 		_ = session.Close()
 		return fmt.Errorf("upload data: %w", err)
 	}
@@ -433,7 +433,7 @@ func (c *VirshClient) UploadVolumeFromBytes(ctx context.Context, pool, name stri
 	// Clean up temp file.
 	cleanSession, _ := c.sshClient.NewSession()
 	if cleanSession != nil {
-		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", tmpFile))
+		_ = cleanSession.Run(fmt.Sprintf("rm -f %s", shellQuote(tmpFile)))
 		_ = cleanSession.Close()
 	}
 
@@ -456,7 +456,7 @@ func (c *VirshClient) UploadQcow2Volume(ctx context.Context, pool, name string, 
 		return fmt.Errorf("ssh session: %w", err)
 	}
 	session.Stdin = r
-	if err := session.Run(fmt.Sprintf("cat > %s", tmpFile)); err != nil {
+	if err := session.Run(fmt.Sprintf("cat > %s", shellQuote(tmpFile))); err != nil {
 		_ = session.Close()
 		return fmt.Errorf("stream qcow2 to %s: %w", tmpFile, err)
 	}
@@ -465,7 +465,7 @@ func (c *VirshClient) UploadQcow2Volume(ctx context.Context, pool, name string, 
 	cleanupTmp := func() {
 		cs, _ := c.sshClient.NewSession()
 		if cs != nil {
-			_ = cs.Run(fmt.Sprintf("rm -f %s", tmpFile))
+			_ = cs.Run(fmt.Sprintf("rm -f %s", shellQuote(tmpFile)))
 			_ = cs.Close()
 		}
 	}
@@ -507,7 +507,7 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
 	// Ensure parent directory exists (requires sudo).
 	dir := path[:strings.LastIndex(path, "/")]
-	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", dir)); err != nil {
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", shellQuote(dir))); err != nil {
 		return fmt.Errorf("mkdir failed: %w", err)
 	}
 
@@ -517,7 +517,7 @@ func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []b
 		return fmt.Errorf("ssh session for write: %w", err)
 	}
 	session.Stdin = bytes.NewReader(data)
-	if err := session.Run(fmt.Sprintf("sudo tee %s > /dev/null", path)); err != nil {
+	if err := session.Run(fmt.Sprintf("sudo tee %s > /dev/null", shellQuote(path))); err != nil {
 		_ = session.Close()
 		return fmt.Errorf("write remote file %s: %w", path, err)
 	}
@@ -537,7 +537,7 @@ func (c *VirshClient) RemoteFileExists(ctx context.Context, path string) (bool, 
 	session.Stdout = &stdout
 	done := make(chan error, 1)
 	go func() {
-		done <- session.Run(fmt.Sprintf("test -e %s && echo present || echo missing", path))
+		done <- session.Run(fmt.Sprintf("test -e %s && echo present || echo missing", shellQuote(path)))
 	}()
 	select {
 	case <-ctx.Done():
@@ -553,7 +553,7 @@ func (c *VirshClient) RemoteFileExists(ctx context.Context, path string) (bool, 
 
 // DeleteRemoteFile deletes a file on the remote host via SSH.
 func (c *VirshClient) DeleteRemoteFile(ctx context.Context, path string) error {
-	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", path))
+	return c.runSSH(ctx, fmt.Sprintf("sudo rm -f %s", shellQuote(path)))
 }
 
 // Close closes the underlying SSH connection.
@@ -562,4 +562,19 @@ func (c *VirshClient) Close() error {
 		return c.sshClient.Close()
 	}
 	return nil
+}
+
+func shellJoin(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

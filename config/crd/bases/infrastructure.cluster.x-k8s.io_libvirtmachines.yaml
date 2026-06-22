@@ -71,6 +71,8 @@ spec:
                     name:
                       description: name is a unique identifier for this disk within
                         the machine.
+                      minLength: 1
+                      pattern: ^[A-Za-z0-9_.:-]+$
                       type: string
                     size:
                       anyOf:
@@ -82,6 +84,8 @@ spec:
                     storagePool:
                       description: storagePool is the name of the libvirt storage
                         pool to use.
+                      minLength: 1
+                      pattern: ^[A-Za-z0-9_.:-]+$
                       type: string
                   required:
                   - name
@@ -228,6 +232,7 @@ spec:
                     description: baseImage is the name of the base image volume to
                       clone from.
                     minLength: 1
+                    pattern: ^[A-Za-z0-9_.:-]+$
                     type: string
                   baseImagePool:
                     description: |-
@@ -235,6 +240,7 @@ spec:
                       If unset, defaults to storagePool. This allows the base image to
                       live on persistent storage while ephemeral VM disks use a different
                       pool (e.g., tmpfs-backed for ephemeral workers).
+                    pattern: ^[A-Za-z0-9_.:-]+$
                     type: string
                   bus:
                     default: virtio
@@ -275,6 +281,7 @@ spec:
                     description: storagePool is the name of the libvirt storage pool
                       to use.
                     minLength: 1
+                    pattern: ^[A-Za-z0-9_.:-]+$
                     type: string
                 required:
                 - baseImage

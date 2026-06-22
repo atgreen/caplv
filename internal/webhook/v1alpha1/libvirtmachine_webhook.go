@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"regexp"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,6 +37,8 @@ import (
 // nolint:unused
 // log is for logging in this package.
 var libvirtmachinelog = logf.Log.WithName("libvirtmachine-resource")
+
+var libvirtIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 
 // SetupLibvirtMachineWebhookWithManager registers the webhook for LibvirtMachine in the manager.
 func SetupLibvirtMachineWebhookWithManager(mgr ctrl.Manager) error {
@@ -75,6 +78,8 @@ func (v *LibvirtMachineCustomValidator) ValidateCreate(ctx context.Context, obj 
 			))
 		}
 	}
+
+	allErrs = append(allErrs, validateShellSafeLibvirtFields(obj.Spec)...)
 
 	// Reject full-clone when baseImagePool differs from storagePool.
 	// virsh vol-clone cannot clone across pools.
@@ -116,6 +121,8 @@ func (v *LibvirtMachineCustomValidator) ValidateUpdate(_ context.Context, oldObj
 
 	var allErrs field.ErrorList
 
+	allErrs = append(allErrs, validateShellSafeLibvirtFields(newObj.Spec)...)
+
 	// ProviderID transitions: only nil->value is allowed. Once set, it cannot
 	// be changed or cleared.
 	if oldObj.Spec.ProviderID != nil {
@@ -154,6 +161,33 @@ func (v *LibvirtMachineCustomValidator) ValidateUpdate(_ context.Context, oldObj
 	}
 
 	return nil, nil
+}
+
+func validateShellSafeLibvirtFields(spec infrastructurev1alpha1.LibvirtMachineSpec) field.ErrorList {
+	var allErrs field.ErrorList
+
+	rootPath := field.NewPath("spec", "rootDisk")
+	allErrs = appendLibvirtIdentifierError(allErrs, rootPath.Child("storagePool"), spec.RootDisk.StoragePool)
+	allErrs = appendLibvirtIdentifierError(allErrs, rootPath.Child("baseImage"), spec.RootDisk.BaseImage)
+	if spec.RootDisk.BaseImagePool != "" {
+		allErrs = appendLibvirtIdentifierError(allErrs, rootPath.Child("baseImagePool"), spec.RootDisk.BaseImagePool)
+	}
+
+	disksPath := field.NewPath("spec", "additionalDisks")
+	for i, disk := range spec.AdditionalDisks {
+		diskPath := disksPath.Index(i)
+		allErrs = appendLibvirtIdentifierError(allErrs, diskPath.Child("name"), disk.Name)
+		allErrs = appendLibvirtIdentifierError(allErrs, diskPath.Child("storagePool"), disk.StoragePool)
+	}
+
+	return allErrs
+}
+
+func appendLibvirtIdentifierError(allErrs field.ErrorList, path *field.Path, value string) field.ErrorList {
+	if value == "" || libvirtIdentifierPattern.MatchString(value) {
+		return allErrs
+	}
+	return append(allErrs, field.Invalid(path, value, "must contain only letters, numbers, '_', '.', ':', or '-'"))
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type LibvirtMachine.

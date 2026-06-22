@@ -95,11 +95,13 @@ type RootDiskSpec struct {
 	// storagePool is the name of the libvirt storage pool to use.
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	StoragePool string `json:"storagePool"`
 
 	// baseImage is the name of the base image volume to clone from.
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	BaseImage string `json:"baseImage"`
 
 	// baseImagePool is the storage pool containing the base image.
@@ -107,6 +109,7 @@ type RootDiskSpec struct {
 	// live on persistent storage while ephemeral VM disks use a different
 	// pool (e.g., tmpfs-backed for ephemeral workers).
 	// +optional
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	BaseImagePool string `json:"baseImagePool,omitempty"`
 
 	// ephemeralPool, when true, causes CAPLV to create the storagePool as
@@ -140,6 +143,8 @@ type RootDiskSpec struct {
 type AdditionalDiskSpec struct {
 	// name is a unique identifier for this disk within the machine.
 	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	Name string `json:"name"`
 
 	// size is the desired size of the disk.
@@ -148,6 +153,8 @@ type AdditionalDiskSpec struct {
 
 	// storagePool is the name of the libvirt storage pool to use.
 	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	StoragePool string `json:"storagePool"`
 
 	// bus is the disk bus type.

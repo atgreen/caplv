@@ -52,12 +52,14 @@ type BaseImageSpec struct {
 	// staged. Must exist on every LibvirtHost in the cluster.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	Pool string `json:"pool"`
 
 	// VolumeName is the libvirt volume name the staged image will register as
 	// inside Pool. Use the same value in LibvirtMachine.spec.rootDisk.baseImage.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	VolumeName string `json:"volumeName"`
 
 	// Source describes where to fetch the qcow2 from. Gzip-wrapped payloads
@@ -175,6 +177,7 @@ type BootArtifactsSpec struct {
 	// HostPath is the directory on each libvirt host where kernel/initramfs are cached.
 	// Files land at <HostPath>/<sha256>/vmlinuz and <HostPath>/<sha256>/initramfs.img.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^/[A-Za-z0-9._/-]+$`
 	HostPath string `json:"hostPath"`
 
 	// KernelArgs is the cmdline appended to the direct-boot kernel. The user is

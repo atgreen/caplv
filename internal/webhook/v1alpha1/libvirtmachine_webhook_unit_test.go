@@ -152,6 +152,32 @@ func TestValidateCreate_CopyOnWriteCrossPool_Allowed(t *testing.T) {
 	}
 }
 
+func TestValidateCreate_RejectsInjectedStoragePool(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{}
+	spec := testMachineSpec()
+	spec.RootDisk.StoragePool = "default; printf INJECTED"
+	obj := &infrav1.LibvirtMachine{Spec: spec}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err == nil {
+		t.Error("expected error for storagePool with shell metacharacters")
+	}
+}
+
+func TestValidateCreate_RejectsInjectedAdditionalDiskFields(t *testing.T) {
+	v := &LibvirtMachineCustomValidator{}
+	spec := testMachineSpec()
+	spec.AdditionalDisks = []infrav1.AdditionalDiskSpec{{
+		Name:        "data; printf INJECTED",
+		StoragePool: "default",
+		Size:        resource.MustParse("10Gi"),
+	}}
+	obj := &infrav1.LibvirtMachine{Spec: spec}
+	_, err := v.ValidateCreate(context.Background(), obj)
+	if err == nil {
+		t.Error("expected error for additional disk name with shell metacharacters")
+	}
+}
+
 // --- ValidateCreate: host uniqueness ---
 
 func TestValidateCreate_HostAlreadyInUse_Rejected(t *testing.T) {
