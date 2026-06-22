@@ -193,6 +193,23 @@ func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *in
 		return
 	}
 
+	// Connectivity proves libvirt-client + daemon are present, but not that the
+	// KVM hypervisor stack is installed. Verify the host can actually run the
+	// kvm domains CAPLV defines so a partial install surfaces here rather than
+	// at first machine provision.
+	if err := libvirtClient.VerifyHypervisor(ctx); err != nil {
+		log.Error(err, "Hypervisor capability check failed")
+		host.Status.Ready = false
+		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
+			Type:               infrav1.HostReachableCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonHypervisorUnavailable,
+			Message:            "Libvirt is reachable but the QEMU/KVM hypervisor is unavailable (is qemu-kvm / libvirt-daemon-driver-qemu installed and KVM enabled?): " + err.Error(),
+			ObservedGeneration: host.Generation,
+		})
+		return
+	}
+
 	// Discover host capacity.
 	nodeInfo, err := libvirtClient.GetNodeInfo(ctx)
 	if err != nil {

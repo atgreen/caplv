@@ -30,15 +30,18 @@ const (
 	NodeLabelledCondition            = "NodeLabelled"
 
 	// Reasons — terminal
-	ReasonBaseImageNotFound    = "BaseImageNotFound"
-	ReasonHostUnauthorized     = "HostUnauthorized"
-	ReasonDomainAlreadyExists  = "DomainAlreadyExists"
-	ReasonInvalidBootstrapData = "InvalidBootstrapData"
-	ReasonSpecMismatch         = "SpecMismatch"
+	ReasonBaseImageNotFound     = "BaseImageNotFound"
+	ReasonBaseImagePoolNotFound = "BaseImagePoolNotFound"
+	ReasonStoragePoolNotFound   = "StoragePoolNotFound"
+	ReasonHostUnauthorized      = "HostUnauthorized"
+	ReasonDomainAlreadyExists   = "DomainAlreadyExists"
+	ReasonInvalidBootstrapData  = "InvalidBootstrapData"
+	ReasonSpecMismatch          = "SpecMismatch"
 
 	// Reasons — transient
-	ReasonStorageInsufficient = "StorageInsufficient"
-	ReasonConnectionFailed    = "ConnectionFailed"
+	ReasonStorageInsufficient   = "StorageInsufficient"
+	ReasonConnectionFailed      = "ConnectionFailed"
+	ReasonHypervisorUnavailable = "HypervisorUnavailable"
 
 	// Reasons — waiting
 	ReasonBootstrapDataNotReady = "BootstrapDataNotReady"

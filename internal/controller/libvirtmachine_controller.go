@@ -310,6 +310,20 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	log = log.WithValues("host", libvirtHost.Name, "domain", rc.domainName)
 	ctx = logf.IntoContext(ctx, log)
 
+	// Step -2: Verify every libvirt storage pool this machine references exists
+	// on the host before any volume work begins. A missing pool otherwise
+	// surfaces as an opaque "Storage pool not found" error that retries forever;
+	// here it becomes a clear, terminal condition.
+	if err := r.preflightPools(ctx, rc); err != nil {
+		return ctrl.Result{}, err
+	}
+	// A terminal preflight failure (e.g. a referenced pool doesn't exist) is not
+	// retryable; stop here rather than letting later steps clobber the failure
+	// reason with a less actionable one.
+	if libvirtMachine.Status.FailureReason != nil {
+		return ctrl.Result{}, nil
+	}
+
 	// Step -1: Stage the cluster's base image onto this host if needed.
 	if err := r.reconcileBaseImage(ctx, rc); err != nil {
 		return ctrl.Result{}, err
@@ -597,6 +611,80 @@ func (r *LibvirtMachineReconciler) resolveAutoSizing(
 	return resolvedVCPUs, resolvedMemoryMB, nil
 }
 
+// requiredPool is a libvirt storage pool a machine references, paired with the
+// terminal reason and human label used if it's missing from the host.
+type requiredPool struct {
+	name   string
+	label  string
+	reason string
+}
+
+// preflightPools verifies that every storage pool this machine references
+// already exists on the host before any volume work begins. A missing pool
+// otherwise surfaces deep inside vol-create-as / vol-info as an opaque
+// "Storage pool not found" error that the reconciler retries forever; catching
+// it here turns it into a single, terminal, actionable condition.
+//
+// Pools that CAPLV provisions itself are intentionally skipped: when
+// spec.rootDisk.ephemeralPool is set, the root-disk pool is a tmpfs pool that
+// reconcileRootDisk creates on demand, so it won't (and shouldn't) exist yet.
+func (r *LibvirtMachineReconciler) preflightPools(ctx context.Context, rc *reconcileCtx) error {
+	log := logf.FromContext(ctx)
+	lm := rc.libvirtMachine
+
+	var required []requiredPool
+	seen := map[string]bool{}
+	add := func(name, label, reason string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		required = append(required, requiredPool{name: name, label: label, reason: reason})
+	}
+
+	// Pool the cluster stages its base qcow2 into (LibvirtCluster.spec.baseImage).
+	if rc.libvirtCluster != nil && rc.libvirtCluster.Spec.BaseImage != nil {
+		add(rc.libvirtCluster.Spec.BaseImage.Pool, "base image", infrav1.ReasonBaseImagePoolNotFound)
+	}
+	// Pool the root disk is cloned/backed from (rootDisk.baseImagePool, which
+	// defaults to storagePool).
+	add(rc.baseImagePool, "base image", infrav1.ReasonBaseImagePoolNotFound)
+	// Pool the root disk is created in — skipped when CAPLV provisions an
+	// ephemeral tmpfs pool, which doesn't exist until reconcileRootDisk runs.
+	if !lm.Spec.RootDisk.EphemeralPool {
+		add(rc.storagePool, "root disk", infrav1.ReasonStoragePoolNotFound)
+	}
+	// Pools for any additional data disks.
+	for _, d := range lm.Spec.AdditionalDisks {
+		add(d.StoragePool, "additional disk", infrav1.ReasonStoragePoolNotFound)
+	}
+
+	for _, p := range required {
+		exists, err := rc.libvirtClient.PoolExists(ctx, p.name)
+		if err != nil {
+			return r.handleLibvirtError(lm, err, "checking "+p.label+" pool")
+		}
+		if exists {
+			continue
+		}
+		msg := fmt.Sprintf(
+			"Storage pool %q (%s) does not exist on host %q; create it on the host or point the spec at an existing pool",
+			p.name, p.label, rc.libvirtHost.Name)
+		log.Info("Terminal error: storage pool not found",
+			"pool", p.name, "use", p.label, "host", rc.libvirtHost.Name, "reason", p.reason)
+		r.setTerminalError(lm, p.reason, msg)
+		apimeta.SetStatusCondition(&lm.Status.Conditions, metav1.Condition{
+			Type:               infrav1.InfrastructureReadyCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             p.reason,
+			Message:            msg,
+			ObservedGeneration: lm.Generation,
+		})
+		return nil
+	}
+	return nil
+}
+
 // reconcileBaseImage stages the cluster-level base qcow2 onto this host if
 // LibvirtCluster.spec.baseImage is set and the configured volume isn't
 // already present in the pool. The qcow2 is fetched into the controller's
@@ -615,6 +703,8 @@ func (r *LibvirtMachineReconciler) reconcileBaseImage(ctx context.Context, rc *r
 	bi := rc.libvirtCluster.Spec.BaseImage
 
 	// Fast path: volume already present in the pool — nothing to do.
+	// The pool itself is verified up front by preflightPools, so a failure
+	// here is a genuine libvirt error rather than a missing-pool config issue.
 	exists, err := rc.libvirtClient.VolumeExists(ctx, bi.Pool, bi.VolumeName)
 	if err != nil {
 		return r.handleLibvirtError(rc.libvirtMachine, err, "checking base image volume")

@@ -37,6 +37,10 @@ type NodeInfo struct {
 // Client defines the interface for interacting with a libvirt host.
 type Client interface {
 	Ping(ctx context.Context) error
+	// VerifyHypervisor confirms the host can actually run the KVM domains CAPLV
+	// defines — catching a partial libvirt install (daemon up, QEMU/KVM driver
+	// missing) that Ping and GetNodeInfo would not surface.
+	VerifyHypervisor(ctx context.Context) error
 	GetNodeInfo(ctx context.Context) (*NodeInfo, error)
 	DomainExists(ctx context.Context, name string) (bool, error)
 	GetDomain(ctx context.Context, name string) (*DomainInfo, error)
