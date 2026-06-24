@@ -28,6 +28,13 @@ import (
 	"github.com/atgreen/caplv/internal/libvirt"
 )
 
+// Pool names reused across the preflight test cases.
+const (
+	poolImages  = "images"
+	poolPersist = "persist"
+	poolVMData  = "vmdata"
+)
+
 // poolRecorder returns a MockClient whose PoolExists reports every pool in
 // present as existing, records the pools queried, and treats all others as
 // missing.
@@ -91,9 +98,9 @@ func TestPreflightPools_BaseImagePoolNotFound(t *testing.T) {
 // different pool. Distinct reason so the message points at the right field.
 func TestPreflightPools_StoragePoolNotFound(t *testing.T) {
 	var queried []string
-	rc := baseRC(poolRecorder(map[string]bool{"images": true}, &queried))
-	rc.baseImagePool = "images"
-	rc.storagePool = "vmdata" // missing on host
+	rc := baseRC(poolRecorder(map[string]bool{poolImages: true}, &queried))
+	rc.baseImagePool = poolImages
+	rc.storagePool = poolVMData // missing on host
 
 	r := &LibvirtMachineReconciler{}
 	if err := r.preflightPools(context.Background(), rc); err != nil {
@@ -105,9 +112,9 @@ func TestPreflightPools_StoragePoolNotFound(t *testing.T) {
 // An additional-disk pool that doesn't exist is also caught up front.
 func TestPreflightPools_AdditionalDiskPoolNotFound(t *testing.T) {
 	var queried []string
-	rc := baseRC(poolRecorder(map[string]bool{"images": true}, &queried))
-	rc.baseImagePool = "images"
-	rc.storagePool = "images"
+	rc := baseRC(poolRecorder(map[string]bool{poolImages: true}, &queried))
+	rc.baseImagePool = poolImages
+	rc.storagePool = poolImages
 	rc.libvirtMachine.Spec.AdditionalDisks = []infrav1.AdditionalDiskSpec{
 		{Size: resource.MustParse("10Gi"), StoragePool: "scratch"},
 	}
@@ -123,8 +130,8 @@ func TestPreflightPools_AdditionalDiskPoolNotFound(t *testing.T) {
 // later — preflight must NOT check it (it legitimately doesn't exist yet).
 func TestPreflightPools_EphemeralPoolSkipped(t *testing.T) {
 	var queried []string
-	rc := baseRC(poolRecorder(map[string]bool{"images": true}, &queried))
-	rc.baseImagePool = "images"
+	rc := baseRC(poolRecorder(map[string]bool{poolImages: true}, &queried))
+	rc.baseImagePool = poolImages
 	rc.storagePool = "eph-machine-xyz" // the ephemeral pool, not yet created
 	rc.libvirtMachine.Spec.RootDisk.EphemeralPool = true
 
@@ -145,10 +152,10 @@ func TestPreflightPools_EphemeralPoolSkipped(t *testing.T) {
 // Everything present: no terminal error, all referenced pools verified once.
 func TestPreflightPools_AllExist(t *testing.T) {
 	var queried []string
-	rc := baseRC(poolRecorder(map[string]bool{"persist": true, "vmdata": true}, &queried))
-	rc.libvirtCluster.Spec.BaseImage = &infrav1.BaseImageSpec{Pool: "persist", VolumeName: "rhcos.qcow2"}
-	rc.baseImagePool = "persist"
-	rc.storagePool = "vmdata"
+	rc := baseRC(poolRecorder(map[string]bool{poolPersist: true, poolVMData: true}, &queried))
+	rc.libvirtCluster.Spec.BaseImage = &infrav1.BaseImageSpec{Pool: poolPersist, VolumeName: "rhcos.qcow2"}
+	rc.baseImagePool = poolPersist
+	rc.storagePool = poolVMData
 
 	r := &LibvirtMachineReconciler{}
 	if err := r.preflightPools(context.Background(), rc); err != nil {
@@ -161,7 +168,7 @@ func TestPreflightPools_AllExist(t *testing.T) {
 	// but must be de-duplicated to a single query.
 	count := 0
 	for _, q := range queried {
-		if q == "persist" {
+		if q == poolPersist {
 			count++
 		}
 	}
