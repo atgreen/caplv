@@ -9,9 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-25
+
 ### Added
 - Storage-pool preflight on `LibvirtMachine` — before any volume work, the controller verifies that every libvirt storage pool the machine references exists on the target host: the cluster base-image staging pool (`LibvirtCluster.spec.baseImage.pool`), the root-disk base-image source pool (`rootDisk.baseImagePool`), the root-disk target pool (`rootDisk.storagePool`), and every `additionalDisks[].storagePool`. A missing pool is now surfaced as a terminal `BaseImagePoolNotFound` / `StoragePoolNotFound` failure with an actionable message and an `InfrastructureReady=False` condition, instead of an opaque `Storage pool not found` error from `vol-create-as` that the reconciler retried indefinitely. Pools that CAPLV provisions itself (the per-machine ephemeral tmpfs pool when `rootDisk.ephemeralPool` is set) are intentionally skipped, and pools referenced more than once are de-duplicated to a single check.
 - Hypervisor capability check in the `LibvirtHost` health probe — after confirming libvirt connectivity, the controller runs `virsh domcapabilities --virttype kvm` to confirm the host can actually run the `<domain type='kvm'>` machines CAPLV defines. This catches a *partial* libvirt install (libvirt-client and the daemon present, but the QEMU/KVM driver/emulator missing or KVM unavailable) that `virsh version`/`nodeinfo` answer happily but which would fail at first machine provision. On failure the host is marked `Ready=false` with a new `HypervisorUnavailable` reason naming the likely-missing packages (`qemu-kvm` / `libvirt-daemon-driver-qemu`).
+
+### Fixed
+- Nil-pointer panic in `LibvirtMachine` reconciliation — when domain provisioning hit a terminal libvirt error (e.g. permission denied), `reconcileDomain` recorded the failure on the machine status and returned `(nil, nil)`, but `reconcileNormal` then dereferenced the nil `domainInfo`, panicking the controller. The terminal-error path now returns cleanly, persisting the recorded `FailureReason`/`FailureMessage`.
+- Added `watch` permission on `nodes` to the controller `ClusterRole`. The controller establishes a cache-backed informer on Nodes whose reflector requires `watch`; the role granted only `get;list;patch;update;delete`, causing the controller-runtime cache to fail with `nodes is forbidden: cannot watch resource "nodes"`.
 
 ## [0.1.1] - 2026-06-19
 
