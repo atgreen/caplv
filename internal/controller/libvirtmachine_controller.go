@@ -354,6 +354,11 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if domainInfo == nil {
+		// reconcileDomain recorded a terminal error on the machine; no domain
+		// info is available so skip further status updates and return cleanly.
+		return ctrl.Result{}, nil
+	}
 
 	// Update status.
 	libvirtMachine.Status.Addresses = machineScope.GetAddresses()
