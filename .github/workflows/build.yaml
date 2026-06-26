@@ -420,6 +420,32 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Check out the repo (CHANGELOG.md only) so the release notes can be
+      # extracted from it below.
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      # Extract the release notes for this tag from CHANGELOG.md — the section
+      # under "## [<version>]" up to the next "## " heading. Falls back to a
+      # placeholder if no matching section is found so the release still has a
+      # body.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {f=1; next}
+            /^## / {f=0}
+            f' CHANGELOG.md | sed '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "See CHANGELOG.md for details." > release-notes.md
+          fi
+          echo "::group::Release notes"
+          cat release-notes.md
+          echo "::endgroup::"
+
       # Download only the artifacts we actually attach to the release.
       # An unfiltered download also pulls the *.dockerbuild metadata blob
       # produced by docker/build-push-action with sbom/provenance enabled,
@@ -484,6 +510,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body_path: release-notes.md
           draft: true
           files: |
             artifacts/release/infrastructure-components.yaml
