@@ -49,8 +49,10 @@ const (
 // SSHClientFactory is a function that creates an SSH client from a LibvirtHost and Secret.
 type SSHClientFactory func(ctx context.Context, host *infrav1.LibvirtHost, secret *corev1.Secret) (*gossh.Client, error)
 
-// LibvirtClientFactory is a function that creates a libvirt Client from an SSH client.
-type LibvirtClientFactory func(sshClient *gossh.Client) libvirt.Client
+// LibvirtClientFactory is a function that creates a libvirt Client from an SSH
+// client and the local connection URI virsh should use on the host
+// (libvirt.ConnURISystem or libvirt.ConnURISession).
+type LibvirtClientFactory func(sshClient *gossh.Client, connURI string) libvirt.Client
 
 // LibvirtHostReconciler reconciles a LibvirtHost object.
 type LibvirtHostReconciler struct {
@@ -177,7 +179,20 @@ func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *in
 	}
 
 	// Verify libvirt is usable.
-	libvirtClient := r.LibvirtClientFactory(sshClient)
+	connURI, err := libvirt.LocalConnectionURI(host.Spec.URI)
+	if err != nil {
+		log.Error(err, "Invalid libvirt connection URI")
+		host.Status.Ready = false
+		apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
+			Type:               infrav1.HostReachableCondition,
+			Status:             metav1.ConditionFalse,
+			Reason:             infrav1.ReasonConnectionFailed,
+			Message:            "Invalid libvirt connection URI: " + err.Error(),
+			ObservedGeneration: host.Generation,
+		})
+		return
+	}
+	libvirtClient := r.LibvirtClientFactory(sshClient, connURI)
 	defer func() { _ = libvirtClient.Close() }()
 
 	if err := libvirtClient.Ping(ctx); err != nil {
@@ -208,6 +223,26 @@ func (r *LibvirtHostReconciler) performHealthCheck(ctx context.Context, host *in
 			ObservedGeneration: host.Generation,
 		})
 		return
+	}
+
+	// Session-mode hosts additionally need setup no virsh query covers — a
+	// setuid qemu-bridge-helper for unprivileged bridge attachment and
+	// loginctl lingering so the session daemon (and its VMs) survives the
+	// controller's SSH sessions closing. Catch a partially set-up host here
+	// rather than at first machine provision (or worse, first disconnect).
+	if connURI == libvirt.ConnURISession {
+		if err := libvirtClient.VerifySessionPrerequisites(ctx); err != nil {
+			log.Error(err, "Session-mode prerequisites check failed")
+			host.Status.Ready = false
+			apimeta.SetStatusCondition(&host.Status.Conditions, metav1.Condition{
+				Type:               infrav1.HostReachableCondition,
+				Status:             metav1.ConditionFalse,
+				Reason:             infrav1.ReasonSessionModeMisconfigured,
+				Message:            "Host is not set up for session-mode libvirt (run setup-host.yaml with libvirt_mode=session): " + err.Error(),
+				ObservedGeneration: host.Generation,
+			})
+			return
+		}
 	}
 
 	// Discover host capacity.

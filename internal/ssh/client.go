@@ -94,10 +94,13 @@ func VerifyHostKey(expectedFingerprint string) gossh.HostKeyCallback {
 
 // ParseLibvirtURI parses a libvirt connection URI into its SSH components.
 // Supported formats:
-//   - qemu+ssh://root@host/system
-//   - qemu+ssh://root@host:2222/system
+//   - qemu+ssh://user@host/system
+//   - qemu+ssh://user@host:2222/system
+//   - qemu+ssh://user@host/session
 //
-// Returns an error for non-SSH URIs (e.g. qemu:///system).
+// The path (/system or /session) selects the daemon virsh connects to once
+// on the host; see libvirt.LocalConnectionURI. Returns an error for non-SSH
+// URIs (e.g. qemu:///system).
 func ParseLibvirtURI(uri string) (user, host string, port int, err error) {
 	if !strings.Contains(uri, "+ssh://") {
 		return "", "", 0, fmt.Errorf("not an SSH URI: %s", uri)

@@ -36,6 +36,11 @@ type SecretReference struct {
 // LibvirtHostSpec defines the desired state of LibvirtHost.
 type LibvirtHostSpec struct {
 	// uri is the libvirt connection URI (e.g. qemu+ssh://user@host/system).
+	// The path selects the libvirt daemon on the host: /system (default)
+	// connects to the privileged system daemon; /session connects to the
+	// per-user daemon of the SSH user. Session mode requires host setup for
+	// unprivileged networking (qemu-bridge-helper) and only supports
+	// network.type=bridge on machines.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	URI string `json:"uri"`

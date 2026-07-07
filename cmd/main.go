@@ -173,8 +173,8 @@ func main() {
 	sshClientFactory := controller.SSHClientFactory(libvirtssh.NewSSHClient)
 
 	// Wire libvirt client factory.
-	libvirtClientFactory := func(sshClient *gossh.Client) libvirt.Client {
-		return libvirt.NewVirshClient(sshClient)
+	libvirtClientFactory := func(sshClient *gossh.Client, connURI string) libvirt.Client {
+		return libvirt.NewVirshClient(sshClient, connURI)
 	}
 
 	if err := (&controller.LibvirtHostReconciler{

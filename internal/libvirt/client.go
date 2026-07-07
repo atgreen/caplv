@@ -41,6 +41,11 @@ type Client interface {
 	// defines — catching a partial libvirt install (daemon up, QEMU/KVM driver
 	// missing) that Ping and GetNodeInfo would not surface.
 	VerifyHypervisor(ctx context.Context) error
+	// VerifySessionPrerequisites confirms host setup that session-mode
+	// (qemu:///session) machines depend on but no virsh query covers: a
+	// setuid qemu-bridge-helper and loginctl lingering for the service
+	// account. Only meaningful when the client connects to a session daemon.
+	VerifySessionPrerequisites(ctx context.Context) error
 	GetNodeInfo(ctx context.Context) (*NodeInfo, error)
 	DomainExists(ctx context.Context, name string) (bool, error)
 	GetDomain(ctx context.Context, name string) (*DomainInfo, error)

@@ -310,6 +310,15 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 	log = log.WithValues("host", libvirtHost.Name, "domain", rc.domainName)
 	ctx = logf.IntoContext(ctx, log)
 
+	// Step -3: Session-mode hosts cannot attach machines to libvirt-managed
+	// networks — the per-user daemon has no network driver. Catch the mismatch
+	// here as a clear, terminal condition instead of letting virsh start fail
+	// later with an opaque "Network not found".
+	r.preflightSessionMode(ctx, rc)
+	if libvirtMachine.Status.FailureReason != nil {
+		return ctrl.Result{}, nil
+	}
+
 	// Step -2: Verify every libvirt storage pool this machine references exists
 	// on the host before any volume work begins. A missing pool otherwise
 	// surfaces as an opaque "Storage pool not found" error that retries forever;
@@ -622,6 +631,36 @@ type requiredPool struct {
 	name   string
 	label  string
 	reason string
+}
+
+// preflightSessionMode rejects spec/host combinations that cannot work on a
+// session-mode (qemu:///session) host. The per-user daemon has no network
+// driver, so network.type=network machines would fail at virsh start with an
+// opaque "Network not found" that looks retryable; catching it here turns it
+// into a terminal, actionable condition. Purely local — no SSH round-trips.
+func (r *LibvirtMachineReconciler) preflightSessionMode(ctx context.Context, rc *reconcileCtx) {
+	lm := rc.libvirtMachine
+	connURI, err := libvirt.LocalConnectionURI(rc.libvirtHost.Spec.URI)
+	if err != nil {
+		// An unparseable URI already failed client creation before this point.
+		return
+	}
+	if connURI != libvirt.ConnURISession || lm.Spec.Network.Type != infrav1.NetworkTypeNetwork {
+		return
+	}
+	msg := fmt.Sprintf(
+		"Host %q uses session-mode libvirt (%s), which cannot attach machines to libvirt-managed networks; use network.type=bridge or a /system host",
+		rc.libvirtHost.Name, rc.libvirtHost.Spec.URI)
+	logf.FromContext(ctx).Info("Terminal error: network type unsupported on session-mode host",
+		"networkType", lm.Spec.Network.Type, "host", rc.libvirtHost.Name)
+	r.setTerminalError(lm, infrav1.ReasonNetworkTypeUnsupported, msg)
+	apimeta.SetStatusCondition(&lm.Status.Conditions, metav1.Condition{
+		Type:               infrav1.InfrastructureReadyCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             infrav1.ReasonNetworkTypeUnsupported,
+		Message:            msg,
+		ObservedGeneration: lm.Generation,
+	})
 }
 
 // preflightPools verifies that every storage pool this machine references
@@ -1537,12 +1576,17 @@ func (r *LibvirtMachineReconciler) createClients(ctx context.Context, host *infr
 		return nil, nil, fmt.Errorf("failed to get SSH secret: %w", err)
 	}
 
+	connURI, err := libvirt.LocalConnectionURI(host.Spec.URI)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid libvirt connection URI: %w", err)
+	}
+
 	sshClient, err := r.SSHClientFactory(ctx, host, secret)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create SSH client: %w", err)
 	}
 
-	libvirtClient := r.LibvirtClientFactory(sshClient)
+	libvirtClient := r.LibvirtClientFactory(sshClient, connURI)
 	return sshClient, libvirtClient, nil
 }
 

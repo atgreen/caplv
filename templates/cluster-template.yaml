@@ -21,7 +21,10 @@
 #   CLUSTER_NAME, NAMESPACE
 #   CONTROL_PLANE_ENDPOINT_HOST   (CONTROL_PLANE_ENDPOINT_PORT defaults to 6443)
 #   LIBVIRT_HOST_NAME             (the LibvirtHost CR name and its libvirt host)
-#   LIBVIRT_HOST_URI              (e.g. qemu+ssh://caplv@host.example.com/system)
+#   LIBVIRT_HOST_URI              (e.g. qemu+ssh://caplv@host.example.com/system;
+#                                  end the path with /session for the unprivileged
+#                                  per-user daemon — requires NETWORK_TYPE=bridge
+#                                  and session-mode host setup, see README)
 #   LIBVIRT_HOST_SSH_SECRET       (name of the Secret holding the SSH private key)
 #   LIBVIRT_HOST_SSH_FINGERPRINT  (SHA256 host key fingerprint)
 #   BOOTSTRAP_SECRET_NAME         (Secret with ignition/cloud-init payload)

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Session-mode (`qemu:///session`) support — the `LibvirtHost` URI path now selects which libvirt daemon the controller drives on the host: `/system` (default, unchanged) or `/session` for the SSH user's unprivileged per-user daemon. In session mode QEMU runs as the service account rather than under the root-owned system daemon; bridge attachment is delegated to QEMU's setuid `qemu-bridge-helper` against bridges whitelisted in `/etc/qemu/bridge.conf`. The host-setup playbook grew a `libvirt_mode=session` variable (plus `session_allowed_bridges`) that enables user lingering, `kvm` group membership, the bridge-helper setuid bit and ACL, and creates the storage pool in the user session. Session mode only supports `network.type: bridge`; libvirt-managed NAT networks still require `/system`. A URI with any other path (e.g. a typo like `/sessions`) is now rejected at reconcile with an explicit error instead of silently driving the system daemon.
+- Session-mode preflight checks. On `LibvirtMachine`: a machine that uses `network.type: network` on a session-mode host is failed terminally with a new `NetworkTypeUnsupported` reason (the per-user daemon has no network driver), instead of `virsh start` retrying forever on an opaque "Network not found". On `LibvirtHost`: session-mode hosts are additionally probed for the setup that no virsh query covers — a setuid (or `cap_net_admin`) `qemu-bridge-helper` and `loginctl` lingering for the service account — and marked `Ready=false` with a new `SessionModeMisconfigured` reason naming the missing piece; without these, VM starts fail with an opaque bridge-helper error, or worse, VMs silently die when the controller's last SSH session closes.
+
 ## [0.1.2] - 2026-06-25
 
 ### Added
