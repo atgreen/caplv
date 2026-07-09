@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -29,18 +30,54 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Local libvirt connection URIs used by virsh on the remote host.
+const (
+	// ConnURISystem is the privileged system daemon connection.
+	ConnURISystem = "qemu:///system"
+	// ConnURISession is the per-user unprivileged daemon connection.
+	ConnURISession = "qemu:///session"
+)
+
+// LocalConnectionURI maps a LibvirtHost URI (e.g. qemu+ssh://user@host/session)
+// to the local connection URI virsh should use once SSH'd into the host.
+// An empty or "/system" path selects the system daemon; "/session" selects
+// the per-user daemon. Any other path is an error.
+func LocalConnectionURI(hostURI string) (string, error) {
+	parsed, err := url.Parse(hostURI)
+	if err != nil {
+		return "", fmt.Errorf("invalid libvirt URI %q: %w", hostURI, err)
+	}
+	switch parsed.Path {
+	case "", "/", "/system":
+		return ConnURISystem, nil
+	case "/session":
+		return ConnURISession, nil
+	default:
+		return "", fmt.Errorf("unsupported libvirt connection path %q in URI %q (expected /system or /session)", parsed.Path, hostURI)
+	}
+}
+
 // VirshClient implements Client using virsh commands over SSH.
 type VirshClient struct {
 	sshClient *ssh.Client
+	// connURI is the local libvirt connection URI passed to virsh -c on the
+	// remote host (qemu:///system or qemu:///session).
+	connURI string
 	// localMode is true when running against local libvirt (no SSH).
 	localMode bool
 	log       logr.Logger
 }
 
-// NewVirshClient creates a new VirshClient that executes virsh commands over SSH.
-func NewVirshClient(sshClient *ssh.Client) *VirshClient {
+// NewVirshClient creates a new VirshClient that executes virsh commands over
+// SSH against the given local connection URI (ConnURISystem or
+// ConnURISession). An empty connURI defaults to the system daemon.
+func NewVirshClient(sshClient *ssh.Client, connURI string) *VirshClient {
+	if connURI == "" {
+		connURI = ConnURISystem
+	}
 	return &VirshClient{
 		sshClient: sshClient,
+		connURI:   connURI,
 		log:       logr.Discard(),
 	}
 }
@@ -48,6 +85,7 @@ func NewVirshClient(sshClient *ssh.Client) *VirshClient {
 // NewLocalVirshClient creates a new VirshClient that executes virsh commands locally.
 func NewLocalVirshClient() *VirshClient {
 	return &VirshClient{
+		connURI:   ConnURISystem,
 		localMode: true,
 		log:       logr.Discard(),
 	}
@@ -60,7 +98,7 @@ func (c *VirshClient) WithLogger(log logr.Logger) *VirshClient {
 }
 
 func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, error) {
-	cmdArgs := append([]string{"virsh", "-c", "qemu:///system"}, args...)
+	cmdArgs := append([]string{"virsh", "-c", c.connURI}, args...)
 	cmd := shellJoin(cmdArgs...)
 	c.log.V(2).Info("Executing virsh command", "cmd", cmd)
 
@@ -107,10 +145,24 @@ func (c *VirshClient) runVirsh(ctx context.Context, args ...string) (string, err
 
 // runSSH executes a shell command on the remote host via SSH.
 func (c *VirshClient) runSSH(ctx context.Context, cmd string) error {
+	stderr, err := c.execSSH(ctx, cmd)
+	if err == nil {
+		return nil
+	}
+	if stderr != "" {
+		return fmt.Errorf("%s: %s", cmd, stderr)
+	}
+	return fmt.Errorf("%s: %w", cmd, err)
+}
+
+// execSSH executes a shell command on the remote host via SSH, returning the
+// trimmed stderr alongside the run error so callers can build their own
+// error messages.
+func (c *VirshClient) execSSH(ctx context.Context, cmd string) (string, error) {
 	c.log.V(2).Info("Executing SSH command", "cmd", cmd)
 	session, err := c.sshClient.NewSession()
 	if err != nil {
-		return fmt.Errorf("ssh session: %w", err)
+		return "", fmt.Errorf("ssh session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
@@ -125,15 +177,15 @@ func (c *VirshClient) runSSH(ctx context.Context, cmd string) error {
 	select {
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGTERM)
-		return ctx.Err()
+		return strings.TrimSpace(stderr.String()), ctx.Err()
 	case err := <-done:
 		if err != nil {
 			stderrStr := strings.TrimSpace(stderr.String())
 			c.log.V(1).Info("SSH command failed", "cmd", cmd, "stderr", stderrStr)
-			return fmt.Errorf("%s: %s", cmd, stderrStr)
+			return stderrStr, err
 		}
 	}
-	return nil
+	return strings.TrimSpace(stderr.String()), nil
 }
 
 func getResourceArg(args []string) string {
@@ -158,6 +210,51 @@ func (c *VirshClient) Ping(ctx context.Context) error {
 func (c *VirshClient) VerifyHypervisor(ctx context.Context) error {
 	_, err := c.runVirsh(ctx, "domcapabilities", "--virttype", "kvm")
 	return err
+}
+
+// VerifySessionPrerequisites confirms the host setup that session-mode
+// (qemu:///session) machines depend on but that no virsh query covers:
+//
+//   - qemu-bridge-helper must be setuid root (or carry cap_net_admin) so the
+//     unprivileged QEMU can attach taps to whitelisted bridges — without it
+//     every VM start fails with an opaque bridge-helper error.
+//   - loginctl lingering must be enabled for the service account, otherwise
+//     systemd tears down /run/user/<uid> (and with it the session daemon and
+//     its VMs) when the last SSH session closes — a failure that only shows
+//     up after the controller disconnects.
+//
+// Both are configured by the setup-host.yaml playbook with
+// libvirt_mode=session. The check scripts emit their own diagnostics on
+// stderr, which become the returned error message.
+func (c *VirshClient) VerifySessionPrerequisites(ctx context.Context) error {
+	if c.localMode {
+		return fmt.Errorf("local mode not implemented")
+	}
+
+	const helperCheck = `for h in /usr/libexec/qemu-bridge-helper /usr/lib/qemu/qemu-bridge-helper; do ` +
+		`if [ -e "$h" ]; then ` +
+		`if [ -u "$h" ] || getcap "$h" 2>/dev/null | grep -q cap_net_admin; then exit 0; fi; ` +
+		`echo "$h is not setuid root and lacks cap_net_admin; session-mode VMs cannot attach to bridges" >&2; exit 1; ` +
+		`fi; done; ` +
+		`echo "qemu-bridge-helper not found; is qemu-kvm installed?" >&2; exit 1`
+	if stderr, err := c.execSSH(ctx, helperCheck); err != nil {
+		if stderr != "" {
+			return fmt.Errorf("%s", stderr)
+		}
+		return fmt.Errorf("qemu-bridge-helper check: %w", err)
+	}
+
+	const lingerCheck = `u=$(id -un); ` +
+		`if [ "$(loginctl show-user "$u" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then ` +
+		`echo "lingering is not enabled for $u — session VMs die when the last SSH session closes (run: loginctl enable-linger $u)" >&2; exit 1; ` +
+		`fi`
+	if stderr, err := c.execSSH(ctx, lingerCheck); err != nil {
+		if stderr != "" {
+			return fmt.Errorf("%s", stderr)
+		}
+		return fmt.Errorf("linger check: %w", err)
+	}
+	return nil
 }
 
 // GetNodeInfo returns host hardware information from virsh nodeinfo.

@@ -176,3 +176,43 @@ func TestPreflightPools_AllExist(t *testing.T) {
 		t.Errorf("pool \"persist\" queried %d times, want 1 (dedup)", count)
 	}
 }
+
+// A libvirt-managed network on a session-mode host can never start — the
+// per-user daemon has no network driver. Must be terminal, not a retry loop
+// on virsh start's "Network not found".
+func TestPreflightSessionMode_NetworkTypeNetworkRejected(t *testing.T) {
+	rc := baseRC(&libvirt.MockClient{})
+	rc.libvirtHost.Spec.URI = "qemu+ssh://caplv@host/session"
+	rc.libvirtMachine.Spec.Network.Type = infrav1.NetworkTypeNetwork
+
+	r := &LibvirtMachineReconciler{}
+	r.preflightSessionMode(context.Background(), rc)
+	assertTerminal(t, rc.libvirtMachine, infrav1.ReasonNetworkTypeUnsupported)
+}
+
+// Bridge attachment is the supported session-mode path (via
+// qemu-bridge-helper) and must pass preflight.
+func TestPreflightSessionMode_BridgeAllowed(t *testing.T) {
+	rc := baseRC(&libvirt.MockClient{})
+	rc.libvirtHost.Spec.URI = "qemu+ssh://caplv@host/session"
+	rc.libvirtMachine.Spec.Network.Type = infrav1.NetworkTypeBridge
+
+	r := &LibvirtMachineReconciler{}
+	r.preflightSessionMode(context.Background(), rc)
+	if rc.libvirtMachine.Status.FailureReason != nil {
+		t.Errorf("unexpected terminal error: %q", *rc.libvirtMachine.Status.FailureReason)
+	}
+}
+
+// System-mode hosts support both attachment types; the check must not fire.
+func TestPreflightSessionMode_SystemHostUnaffected(t *testing.T) {
+	rc := baseRC(&libvirt.MockClient{})
+	rc.libvirtHost.Spec.URI = "qemu+ssh://caplv@host/system"
+	rc.libvirtMachine.Spec.Network.Type = infrav1.NetworkTypeNetwork
+
+	r := &LibvirtMachineReconciler{}
+	r.preflightSessionMode(context.Background(), rc)
+	if rc.libvirtMachine.Status.FailureReason != nil {
+		t.Errorf("unexpected terminal error: %q", *rc.libvirtMachine.Status.FailureReason)
+	}
+}

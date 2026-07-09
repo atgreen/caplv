@@ -37,11 +37,19 @@ const (
 	ReasonDomainAlreadyExists   = "DomainAlreadyExists"
 	ReasonInvalidBootstrapData  = "InvalidBootstrapData"
 	ReasonSpecMismatch          = "SpecMismatch"
+	// ReasonNetworkTypeUnsupported marks a machine whose network attachment
+	// cannot work on its host — e.g. network.type=network on a session-mode
+	// (qemu:///session) host, whose per-user daemon has no network driver.
+	ReasonNetworkTypeUnsupported = "NetworkTypeUnsupported"
 
 	// Reasons — transient
 	ReasonStorageInsufficient   = "StorageInsufficient"
 	ReasonConnectionFailed      = "ConnectionFailed"
 	ReasonHypervisorUnavailable = "HypervisorUnavailable"
+	// ReasonSessionModeMisconfigured marks a session-mode host missing setup
+	// that unprivileged VMs depend on (setuid qemu-bridge-helper, user
+	// lingering). Fixable on the host, so re-checked like other host probes.
+	ReasonSessionModeMisconfigured = "SessionModeMisconfigured"
 
 	// Reasons — waiting
 	ReasonBootstrapDataNotReady = "BootstrapDataNotReady"

@@ -150,7 +150,7 @@ func TestHostReconcile_LibvirtPingFails_SetsNotReady(t *testing.T) {
 			// SSH succeeds (return nil client — Close() is safe on nil per our impl)
 			return nil, nil
 		},
-		LibvirtClientFactory: func(_ *gossh.Client) libvirt.Client {
+		LibvirtClientFactory: func(_ *gossh.Client, _ string) libvirt.Client {
 			return &libvirt.MockClient{
 				PingFn: func(_ context.Context) error {
 					return fmt.Errorf("virsh: command not found")
@@ -201,7 +201,7 @@ func TestHostReconcile_AllSucceeds_SetsReady(t *testing.T) {
 		SSHClientFactory: func(_ context.Context, _ *infrav1.LibvirtHost, _ *corev1.Secret) (*gossh.Client, error) {
 			return nil, nil
 		},
-		LibvirtClientFactory: func(_ *gossh.Client) libvirt.Client {
+		LibvirtClientFactory: func(_ *gossh.Client, _ string) libvirt.Client {
 			return &libvirt.MockClient{
 				PingFn:  func(_ context.Context) error { return nil },
 				CloseFn: func() error { return nil },
@@ -250,7 +250,7 @@ func TestHostReconcile_HypervisorUnavailable_SetsNotReady(t *testing.T) {
 		SSHClientFactory: func(_ context.Context, _ *infrav1.LibvirtHost, _ *corev1.Secret) (*gossh.Client, error) {
 			return nil, nil
 		},
-		LibvirtClientFactory: func(_ *gossh.Client) libvirt.Client {
+		LibvirtClientFactory: func(_ *gossh.Client, _ string) libvirt.Client {
 			return &libvirt.MockClient{
 				PingFn:             func(_ context.Context) error { return nil },
 				VerifyHypervisorFn: func(_ context.Context) error { return fmt.Errorf("failed to get emulator capabilities") },
@@ -272,5 +272,102 @@ func TestHostReconcile_HypervisorUnavailable_SetsNotReady(t *testing.T) {
 	}
 	if updated.Status.Conditions[0].Reason != infrav1.ReasonHypervisorUnavailable {
 		t.Errorf("expected reason HypervisorUnavailable, got %s", updated.Status.Conditions[0].Reason)
+	}
+}
+
+// A session-mode host missing its unprivileged-networking setup (setuid
+// qemu-bridge-helper, lingering) must be marked not-ready with
+// SessionModeMisconfigured, not fail obscurely at first machine provision.
+func TestHostReconcile_SessionPrerequisitesMissing_SetsNotReady(t *testing.T) {
+	s := testScheme(t)
+	host := &infrav1.LibvirtHost{
+		ObjectMeta: metav1.ObjectMeta{Name: "host1", Namespace: "default"},
+		Spec: infrav1.LibvirtHostSpec{
+			URI:       "qemu+ssh://caplv@host/session",
+			SecretRef: &infrav1.SecretReference{Name: "ssh-key"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ssh-key", Namespace: "default"},
+		Data:       map[string][]byte{"ssh-privatekey": []byte("fake-key")},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(host, secret).WithStatusSubresource(host).Build()
+
+	r := &LibvirtHostReconciler{
+		Client: k8sClient,
+		Scheme: s,
+		SSHClientFactory: func(_ context.Context, _ *infrav1.LibvirtHost, _ *corev1.Secret) (*gossh.Client, error) {
+			return nil, nil
+		},
+		LibvirtClientFactory: func(_ *gossh.Client, connURI string) libvirt.Client {
+			if connURI != libvirt.ConnURISession {
+				t.Errorf("factory got connURI %q, want %q", connURI, libvirt.ConnURISession)
+			}
+			return &libvirt.MockClient{
+				VerifySessionPrerequisitesFn: func(_ context.Context) error {
+					return fmt.Errorf("lingering is not enabled for caplv")
+				},
+			}
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "host1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	updated := &infrav1.LibvirtHost{}
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "host1", Namespace: "default"}, updated)
+	if updated.Status.Ready {
+		t.Error("expected Ready=false when session prerequisites are missing")
+	}
+	if updated.Status.Conditions[0].Reason != infrav1.ReasonSessionModeMisconfigured {
+		t.Errorf("expected reason SessionModeMisconfigured, got %s", updated.Status.Conditions[0].Reason)
+	}
+}
+
+// System-mode hosts must not be probed for session prerequisites.
+func TestHostReconcile_SystemHost_SkipsSessionCheck(t *testing.T) {
+	s := testScheme(t)
+	host := &infrav1.LibvirtHost{
+		ObjectMeta: metav1.ObjectMeta{Name: "host1", Namespace: "default"},
+		Spec: infrav1.LibvirtHostSpec{
+			URI:       "qemu+ssh://caplv@host/system",
+			SecretRef: &infrav1.SecretReference{Name: "ssh-key"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ssh-key", Namespace: "default"},
+		Data:       map[string][]byte{"ssh-privatekey": []byte("fake-key")},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(s).WithObjects(host, secret).WithStatusSubresource(host).Build()
+
+	r := &LibvirtHostReconciler{
+		Client: k8sClient,
+		Scheme: s,
+		SSHClientFactory: func(_ context.Context, _ *infrav1.LibvirtHost, _ *corev1.Secret) (*gossh.Client, error) {
+			return nil, nil
+		},
+		LibvirtClientFactory: func(_ *gossh.Client, _ string) libvirt.Client {
+			return &libvirt.MockClient{
+				VerifySessionPrerequisitesFn: func(_ context.Context) error {
+					t.Error("VerifySessionPrerequisites must not be called for a /system host")
+					return nil
+				},
+			}
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "host1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	updated := &infrav1.LibvirtHost{}
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "host1", Namespace: "default"}, updated)
+	if !updated.Status.Ready {
+		t.Error("expected Ready=true for a healthy system-mode host")
 	}
 }

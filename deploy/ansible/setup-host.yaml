@@ -14,7 +14,18 @@
 #   base_image_url    - URL to download (only consulted when stage_base_image=true)
 #   base_image_name   - filename in the storage pool (default: rhcos.qcow2)
 #   caplv_user        - service account name (default: caplv)
-#   storage_pool_path - libvirt default pool path (default: /var/lib/libvirt/images)
+#   libvirt_mode      - "system" (default) or "session". In session mode the
+#                       VMs run under the service account's per-user libvirt
+#                       daemon instead of the root-managed system daemon.
+#                       Session mode only supports network.type=bridge on
+#                       machines; bridges must be listed in
+#                       session_allowed_bridges so qemu-bridge-helper can
+#                       attach taps to them.
+#   session_allowed_bridges - bridges whitelisted for qemu-bridge-helper in
+#                       session mode (default: [virbr0])
+#   storage_pool_path - libvirt default pool path (default:
+#                       /var/lib/libvirt/images in system mode,
+#                       ~caplv/.local/share/libvirt/images in session mode)
 #   ssh_key_path      - where to write the generated key pair (default: /tmp/caplv-key)
 
 - name: Prepare host for CAPLV
@@ -24,13 +35,21 @@
 
   vars:
     caplv_user: caplv
-    storage_pool_path: /var/lib/libvirt/images
+    libvirt_mode: system
+    session_allowed_bridges: [virbr0]
+    bridge_helper_path: /usr/libexec/qemu-bridge-helper
+    storage_pool_path: "{{ '/home/' + caplv_user + '/.local/share/libvirt/images' if libvirt_mode == 'session' else '/var/lib/libvirt/images' }}"
     stage_base_image: false
     base_image_url: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.18/latest/rhcos-qemu.x86_64.qcow2.gz
     base_image_name: rhcos.qcow2
     ssh_key_path: /tmp/caplv-key
 
   tasks:
+    - name: Validate libvirt_mode
+      ansible.builtin.assert:
+        that: libvirt_mode in ['system', 'session']
+        fail_msg: "libvirt_mode must be 'system' or 'session', got '{{ libvirt_mode }}'"
+
     # ── Packages (use shell to avoid python module issues) ────
 
     - name: Install libvirt and UEFI firmware
@@ -81,9 +100,16 @@
         name: "{{ caplv_user }}"
         system: true
         shell: /bin/bash
-        groups: libvirt
+        # Session mode needs direct /dev/kvm access (the kvm group); in system
+        # mode QEMU runs as the qemu user and the libvirt group suffices.
+        groups: "{{ 'libvirt,kvm' if libvirt_mode == 'session' else 'libvirt' }}"
         append: true
         create_home: true
+
+    - name: Get service account uid
+      ansible.builtin.command: id -u {{ caplv_user }}
+      register: caplv_uid
+      changed_when: false
 
     - name: Create .ssh directory
       ansible.builtin.file:
@@ -118,6 +144,67 @@
         mode: "0440"
         validate: "visudo -cf %s"
 
+    # ── Session mode (unprivileged libvirt) ───────────────────
+
+    - name: Configure session mode
+      when: libvirt_mode == 'session'
+      block:
+        - name: Enable lingering so session VMs survive logout and autostart
+          ansible.builtin.command: loginctl enable-linger {{ caplv_user }}
+          changed_when: true
+
+        - name: Make qemu-bridge-helper setuid so unprivileged QEMU can attach taps to whitelisted bridges
+          ansible.builtin.file:
+            path: "{{ bridge_helper_path }}"
+            owner: root
+            group: root
+            mode: "4755"
+
+        # Fedora reads /etc/qemu/bridge.conf, RHEL's qemu-kvm build reads
+        # /etc/qemu-kvm/bridge.conf — write both.
+        - name: Create qemu bridge ACL directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+          loop:
+            - /etc/qemu
+            - /etc/qemu-kvm
+
+        - name: Whitelist bridges for qemu-bridge-helper
+          ansible.builtin.copy:
+            content: |
+              {% for bridge in session_allowed_bridges %}
+              allow {{ bridge }}
+              {% endfor %}
+            dest: "{{ item }}/bridge.conf"
+            mode: "0644"
+          loop:
+            - /etc/qemu
+            - /etc/qemu-kvm
+
+        - name: Ensure session storage parent directories are owned by the service account
+          ansible.builtin.file:
+            path: "/home/{{ caplv_user }}/{{ item }}"
+            state: directory
+            owner: "{{ caplv_user }}"
+            group: "{{ caplv_user }}"
+            mode: "0755"
+          loop:
+            - .local
+            - .local/share
+            - .local/share/libvirt
+
+    # In session mode virsh must run as the service account against its
+    # per-user daemon; XDG_RUNTIME_DIR points at the lingering user runtime
+    # dir so the daemon can be auto-spawned.
+    - name: Set virsh command for the selected mode
+      ansible.builtin.set_fact:
+        virsh: >-
+          {{ 'virsh -c qemu:///system'
+             if libvirt_mode == 'system'
+             else 'runuser -u ' + caplv_user + ' -- env XDG_RUNTIME_DIR=/run/user/' + caplv_uid.stdout + ' virsh -c qemu:///session' }}
+
     # ── Storage pool ──────────────────────────────────────────
 
     - name: Ensure storage pool directory exists
@@ -125,16 +212,18 @@
         path: "{{ storage_pool_path }}"
         state: directory
         mode: "0711"
+        owner: "{{ caplv_user if libvirt_mode == 'session' else omit }}"
+        group: "{{ caplv_user if libvirt_mode == 'session' else omit }}"
 
     - name: List existing storage pools
-      ansible.builtin.command: virsh pool-list --all --name
+      ansible.builtin.command: "{{ virsh }} pool-list --all --name"
       register: pool_list
       changed_when: false
 
     - name: Find pool using our storage path
       ansible.builtin.shell: |
-        for pool in $(virsh pool-list --all --name | grep -v '^$'); do
-          path=$(virsh pool-dumpxml "$pool" 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)')
+        for pool in $({{ virsh }} pool-list --all --name | grep -v '^$'); do
+          path=$({{ virsh }} pool-dumpxml "$pool" 2>/dev/null | grep -oP '(?<=<path>).*(?=</path>)')
           if [ "$path" = "{{ storage_pool_path }}" ]; then
             echo "$pool"
             exit 0
@@ -150,17 +239,17 @@
 
     - name: Define storage pool if none uses this path
       ansible.builtin.command: >
-        virsh pool-define-as {{ libvirt_pool_name }} dir --target {{ storage_pool_path }}
+        {{ virsh }} pool-define-as {{ libvirt_pool_name }} dir --target {{ storage_pool_path }}
       when: existing_pool.stdout | trim == ""
 
     - name: Ensure storage pool is started
-      ansible.builtin.command: virsh pool-start {{ libvirt_pool_name }}
+      ansible.builtin.command: "{{ virsh }} pool-start {{ libvirt_pool_name }}"
       register: pool_start
       changed_when: pool_start.rc == 0
       failed_when: false
 
     - name: Ensure storage pool autostarts
-      ansible.builtin.command: virsh pool-autostart {{ libvirt_pool_name }}
+      ansible.builtin.command: "{{ virsh }} pool-autostart {{ libvirt_pool_name }}"
       changed_when: false
       failed_when: false
 
@@ -181,14 +270,14 @@
         - not base_image_stat.stat.exists
 
     - name: Refresh storage pool
-      ansible.builtin.command: "virsh pool-refresh {{ libvirt_pool_name }}"
+      ansible.builtin.command: "{{ virsh }} pool-refresh {{ libvirt_pool_name }}"
       changed_when: false
       when: stage_base_image | bool
 
     # ── Verification ──────────────────────────────────────────
 
     - name: Verify libvirtd is running
-      ansible.builtin.command: virsh version
+      ansible.builtin.command: "{{ virsh }} version"
       changed_when: false
 
     - name: Test SSH connectivity as caplv user
@@ -198,7 +287,7 @@
         -o StrictHostKeyChecking=no
         -o UserKnownHostsFile=/dev/null
         {{ caplv_user }}@{{ ansible_default_ipv4.address }}
-        virsh -c qemu:///system version
+        virsh -c qemu:///{{ libvirt_mode }} version
       delegate_to: localhost
       become: false
       changed_when: false
@@ -213,7 +302,7 @@
         ssh_fingerprint: "{{ host_key.stdout.split(' ')[1] }}"
 
     - name: List base images in pool
-      ansible.builtin.command: "virsh vol-list {{ libvirt_pool_name }}"
+      ansible.builtin.command: "{{ virsh }} vol-list {{ libvirt_pool_name }}"
       register: vol_list
       changed_when: false
 
@@ -244,7 +333,7 @@
           - "  metadata:"
           - "    name: laptop"
           - "  spec:"
-          - "    uri: \"qemu+ssh://{{ caplv_user }}@{{ ansible_default_ipv4.address }}/system\""
+          - "    uri: \"qemu+ssh://{{ caplv_user }}@{{ ansible_default_ipv4.address }}/{{ libvirt_mode }}\""
           - "    secretRef:"
           - "      name: laptop-ssh-key"
           - "    hostKeyFingerprint: \"{{ ssh_fingerprint }}\""

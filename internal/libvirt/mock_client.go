@@ -25,6 +25,7 @@ import (
 type MockClient struct {
 	PingFn                         func(ctx context.Context) error
 	VerifyHypervisorFn             func(ctx context.Context) error
+	VerifySessionPrerequisitesFn   func(ctx context.Context) error
 	GetNodeInfoFn                  func(ctx context.Context) (*NodeInfo, error)
 	DomainExistsFn                 func(ctx context.Context, name string) (bool, error)
 	GetDomainFn                    func(ctx context.Context, name string) (*DomainInfo, error)
@@ -61,6 +62,14 @@ func (m *MockClient) Ping(ctx context.Context) error {
 func (m *MockClient) VerifyHypervisor(ctx context.Context) error {
 	if m.VerifyHypervisorFn != nil {
 		return m.VerifyHypervisorFn(ctx)
+	}
+	return nil
+}
+
+// VerifySessionPrerequisites delegates to VerifySessionPrerequisitesFn or returns nil.
+func (m *MockClient) VerifySessionPrerequisites(ctx context.Context) error {
+	if m.VerifySessionPrerequisitesFn != nil {
+		return m.VerifySessionPrerequisitesFn(ctx)
 	}
 	return nil
 }
