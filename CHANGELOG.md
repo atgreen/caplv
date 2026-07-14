@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-07-14
 
 ### Added
 - Session-mode (`qemu:///session`) support — the `LibvirtHost` URI path now selects which libvirt daemon the controller drives on the host: `/system` (default, unchanged) or `/session` for the SSH user's unprivileged per-user daemon. In session mode QEMU runs as the service account rather than under the root-owned system daemon; bridge attachment is delegated to QEMU's setuid `qemu-bridge-helper` against bridges whitelisted in `/etc/qemu/bridge.conf`. The host-setup playbook grew a `libvirt_mode=session` variable (plus `session_allowed_bridges`) that enables user lingering, `kvm` group membership, the bridge-helper setuid bit and ACL, and creates the storage pool in the user session. Session mode only supports `network.type: bridge`; libvirt-managed NAT networks still require `/system`. A URI with any other path (e.g. a typo like `/sessions`) is now rejected at reconcile with an explicit error instead of silently driving the system daemon.
