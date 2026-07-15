@@ -237,7 +237,9 @@ type ManagedArtifacts struct {
 	// +optional
 	IgnitionFile string `json:"ignitionFile,omitempty"`
 
-	// nvramPath is the path to the NVRAM file on the host.
+	// nvramPath is the path to the NVRAM file on the host. Empty on
+	// session-mode hosts, where libvirt places the NVRAM file in the
+	// per-user daemon's own nvram directory.
 	// +optional
 	NVRAMPath string `json:"nvramPath,omitempty"`
 

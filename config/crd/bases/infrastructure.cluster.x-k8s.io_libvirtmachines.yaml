@@ -430,7 +430,10 @@ spec:
                       Only used for ignition bootstrap format (delivered via fw_cfg).
                     type: string
                   nvramPath:
-                    description: nvramPath is the path to the NVRAM file on the host.
+                    description: |-
+                      nvramPath is the path to the NVRAM file on the host. Empty on
+                      session-mode hosts, where libvirt places the NVRAM file in the
+                      per-user daemon's own nvram directory.
                     type: string
                   rootDiskVolume:
                     description: rootDiskVolume is the name of the root disk volume

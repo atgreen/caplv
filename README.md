@@ -180,6 +180,14 @@ daemon), it confirms `qemu-bridge-helper` is setuid (or has
 `cap_net_admin`) and that lingering is enabled, marking the host
 `Ready=false` with reason `SessionModeMisconfigured` otherwise.
 
+On session hosts, UEFI machines get no explicit NVRAM path in their
+domain XML: the system daemon's `/var/lib/libvirt/qemu/nvram/` is
+root-owned and unwritable for the per-user daemon, so libvirt instead
+allocates each machine's NVRAM file in its own directory
+(`~caplv/.config/libvirt/qemu/nvram/`), initialized from the host's
+`spec.nvramTemplatePath` and removed at undefine. Note this lives in the
+service account's home — if that home is on NFS, see the caveat below.
+
 Session mode limitations:
 
 - Machines must use `network.type: bridge`. Libvirt-managed NAT networks
@@ -190,6 +198,17 @@ Session mode limitations:
 - On SELinux-enforcing hosts, sVirt isolation between guests is reduced
   (session guests run unconfined as the service account). If a guest
   image fails to open, check file contexts under the session pool path.
+- The session daemon keeps its state — domain definitions, logs, and the
+  per-machine UEFI NVRAM files QEMU holds open for write — under the
+  service account's `~/.config` and `~/.cache`. If the account's home is
+  on NFS, QEMU's image locking needs working byte-range locks (fine on
+  NFSv4; NFSv3 needs a functioning lock manager) and an NFS outage can
+  I/O-error running guests. Prefer a local home for the service account,
+  or relocate the state by setting `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` to
+  a local path in the account's systemd user environment
+  (`~/.config/environment.d/` is itself read from `$XDG_CONFIG_HOME`, so
+  set it via `systemctl --user set-environment` under lingering, or a
+  PAM env entry).
 
 **6. Pre-stage RHCOS base images** on each libvirt host in the persistent
 storage pool (e.g., `/var/lib/libvirt/images/rhcos.qcow2`). The RHCOS

@@ -80,8 +80,11 @@ spec:
                 type: string
               nvramTemplatePath:
                 default: /usr/share/OVMF/OVMF_VARS.fd
-                description: nvramTemplatePath overrides the NVRAM template path on
-                  the host.
+                description: |-
+                  nvramTemplatePath is the UEFI VARS template on the host that each
+                  machine's private NVRAM file is initialized from (the domain XML's
+                  <nvram template=...>). It should be the VARS file matching the
+                  firmwarePath loader build.
                 type: string
               reservedResources:
                 description: |-

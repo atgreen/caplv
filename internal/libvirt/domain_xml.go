@@ -27,7 +27,8 @@ type DomainXMLParams struct {
 	Machine          string
 	Firmware         string // "uefi" or "bios"
 	FirmwarePath     string
-	NVRAMPath        string
+	NVRAMPath        string // per-VM NVRAM file; empty lets libvirt pick its per-daemon default location
+	NVRAMTemplate    string // VARS template the NVRAM file is initialized from
 	RootDiskPath     string
 	RootDiskBus      string
 	IgnitionPath     string // path to ignition JSON on host — delivered via fw_cfg, or via virtio-blk when KernelPath is set
@@ -111,7 +112,8 @@ type domainLoader struct {
 }
 
 type domainNVRAM struct {
-	Value string `xml:",chardata"`
+	Template string `xml:"template,attr,omitempty"`
+	Value    string `xml:",chardata"`
 }
 
 type domainFeatures struct {
@@ -274,8 +276,14 @@ func buildOS(params DomainXMLParams) domainOS {
 				Type:     "pflash",
 				Value:    params.FirmwarePath,
 			}
-			if params.NVRAMPath != "" {
-				os.NVRAM = &domainNVRAM{Value: params.NVRAMPath}
+			// NVRAMPath may be empty (session-mode hosts): libvirt then
+			// allocates the NVRAM file in the daemon's own nvram directory,
+			// initialized from the template.
+			if params.NVRAMPath != "" || params.NVRAMTemplate != "" {
+				os.NVRAM = &domainNVRAM{
+					Template: params.NVRAMTemplate,
+					Value:    params.NVRAMPath,
+				}
 			}
 		} else {
 			// No explicit path: let libvirt auto-detect firmware.

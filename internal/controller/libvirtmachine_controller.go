@@ -288,6 +288,15 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		baseImagePool = storagePool
 	}
 
+	// The system daemon's NVRAM directory (/var/lib/libvirt/qemu/nvram) is
+	// root-owned; a session daemon runs as the service account and cannot
+	// create files there. Leave the path empty on session-mode hosts so
+	// libvirt allocates the NVRAM file in its own per-user nvram directory.
+	nvramPath := machineScope.NVRAMPath()
+	if connURI, _ := libvirt.LocalConnectionURI(libvirtHost.Spec.URI); connURI == libvirt.ConnURISession {
+		nvramPath = ""
+	}
+
 	rc := &reconcileCtx{
 		libvirtMachine:   libvirtMachine,
 		libvirtCluster:   libvirtCluster,
@@ -302,7 +311,7 @@ func (r *LibvirtMachineReconciler) reconcileNormal(
 		domainName:       machineScope.DomainName(),
 		rootDiskVolume:   machineScope.RootDiskVolumeName(),
 		bootstrapISO:     machineScope.BootstrapISOName(),
-		nvramPath:        machineScope.NVRAMPath(),
+		nvramPath:        nvramPath,
 		ignitionFilePath: machineScope.IgnitionFilePath(),
 	}
 
@@ -1385,6 +1394,7 @@ func (r *LibvirtMachineReconciler) reconcileDomain(ctx context.Context, rc *reco
 			Firmware:        string(libvirtMachine.Spec.Domain.Firmware),
 			FirmwarePath:    rc.libvirtHost.Spec.FirmwarePath,
 			NVRAMPath:       rc.nvramPath,
+			NVRAMTemplate:   rc.libvirtHost.Spec.NVRAMTemplatePath,
 			RootDiskPath:    rootDiskPath,
 			RootDiskBus:     libvirtMachine.Spec.RootDisk.Bus,
 			AdditionalDisks: rc.additionalDiskParams,

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- Session-mode UEFI machines failed at `virsh start` with `Failed to create file '/var/lib/libvirt/qemu/nvram/..._VARS.fd.new': Permission denied` — the domain XML pinned every machine's NVRAM file into the system daemon's root-owned nvram directory, which the unprivileged per-user daemon can never write. On session-mode hosts the explicit NVRAM path is now omitted, so libvirt allocates the file in its own per-user nvram directory (`~/.config/libvirt/qemu/nvram/`) and removes it at undefine; `status.artifacts.nvramPath` is left empty accordingly.
+- `LibvirtHost.spec.nvramTemplatePath` was silently ignored — the field existed (with its `/usr/share/OVMF/OVMF_VARS.fd` default) but was never wired into the domain XML. It is now emitted as `<nvram template=...>` for UEFI machines with an explicit `firmwarePath`, so each machine's NVRAM is initialized from the configured VARS template on both system- and session-mode hosts.
+
 ## [0.2.1] - 2026-07-15
 
 ### Changed

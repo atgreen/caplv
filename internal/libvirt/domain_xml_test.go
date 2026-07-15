@@ -21,6 +21,11 @@ import (
 	"testing"
 )
 
+const (
+	testFirmwareUEFI = "uefi"
+	testOVMFCodePath = "/usr/share/OVMF/OVMF_CODE.fd"
+)
+
 func baseParams() DomainXMLParams {
 	return DomainXMLParams{
 		Name:         "test-domain",
@@ -39,8 +44,8 @@ func baseParams() DomainXMLParams {
 
 func TestGenerateDomainXML_UEFIMode(t *testing.T) {
 	params := baseParams()
-	params.Firmware = "uefi"
-	params.FirmwarePath = "/usr/share/OVMF/OVMF_CODE.fd"
+	params.Firmware = testFirmwareUEFI
+	params.FirmwarePath = testOVMFCodePath
 	params.NVRAMPath = "/var/lib/libvirt/qemu/nvram/test_VARS.fd"
 
 	xml, err := GenerateDomainXML(params)
@@ -58,6 +63,46 @@ func TestGenerateDomainXML_UEFIMode(t *testing.T) {
 	// be set (it conflicts with the explicit <loader> on newer libvirt).
 	if strings.Contains(xml, `firmware="efi"`) {
 		t.Error("UEFI XML with explicit loader path should not contain firmware=\"efi\" attribute")
+	}
+}
+
+func TestGenerateDomainXML_UEFINVRAMTemplate(t *testing.T) {
+	params := baseParams()
+	params.Firmware = testFirmwareUEFI
+	params.FirmwarePath = testOVMFCodePath
+	params.NVRAMPath = "/var/lib/libvirt/qemu/nvram/test_VARS.fd"
+	params.NVRAMTemplate = "/usr/share/OVMF/OVMF_VARS.fd"
+
+	xml, err := GenerateDomainXML(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(xml, `<nvram template="/usr/share/OVMF/OVMF_VARS.fd">/var/lib/libvirt/qemu/nvram/test_VARS.fd</nvram>`) {
+		t.Errorf("expected nvram element with template attribute and explicit path, got:\n%s", xml)
+	}
+}
+
+// Session-mode hosts pass no NVRAM path: the element must carry only the
+// template so libvirt allocates the file in its own per-user nvram directory
+// (the system path is root-owned and unwritable for a session daemon).
+func TestGenerateDomainXML_UEFISessionModeNoNVRAMPath(t *testing.T) {
+	params := baseParams()
+	params.Firmware = testFirmwareUEFI
+	params.FirmwarePath = testOVMFCodePath
+	params.NVRAMPath = ""
+	params.NVRAMTemplate = "/usr/share/OVMF/OVMF_VARS.fd"
+
+	xml, err := GenerateDomainXML(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(xml, `<nvram template="/usr/share/OVMF/OVMF_VARS.fd"></nvram>`) {
+		t.Errorf("expected nvram element with template only, got:\n%s", xml)
+	}
+	if strings.Contains(xml, "/var/lib/libvirt/qemu/nvram") {
+		t.Errorf("session-mode XML must not reference the system nvram directory, got:\n%s", xml)
 	}
 }
 

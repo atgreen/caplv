@@ -60,7 +60,10 @@ type LibvirtHostSpec struct {
 	// +kubebuilder:default="/usr/share/OVMF/OVMF_CODE.secboot.fd"
 	FirmwarePath string `json:"firmwarePath,omitempty"`
 
-	// nvramTemplatePath overrides the NVRAM template path on the host.
+	// nvramTemplatePath is the UEFI VARS template on the host that each
+	// machine's private NVRAM file is initialized from (the domain XML's
+	// <nvram template=...>). It should be the VARS file matching the
+	// firmwarePath loader build.
 	// +optional
 	// +kubebuilder:default="/usr/share/OVMF/OVMF_VARS.fd"
 	NVRAMTemplatePath string `json:"nvramTemplatePath,omitempty"`
