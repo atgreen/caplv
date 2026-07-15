@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.1] - 2026-07-15
 
 ### Changed
 - Documented which storage pools CAPLV creates versus which the operator must provide: a new "Storage Pools" README section enumerates every pool referenced across the CRDs, and the `rootDisk.storagePool` / `rootDisk.ephemeralPool` CRD field descriptions now state that the ephemeral pool is a CAPLV-generated per-machine pool named `<namespace>-<cluster>-<machine>-pool` (surfaced in `status.artifacts.ephemeralPoolName`) — previously they incorrectly implied CAPLV creates a tmpfs pool under the `storagePool` name.
