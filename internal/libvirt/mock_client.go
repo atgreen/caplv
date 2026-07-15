@@ -34,6 +34,8 @@ type MockClient struct {
 	DestroyDomainFn                func(ctx context.Context, name string) error
 	UndefineDomainFn               func(ctx context.Context, name string) error
 	PoolExistsFn                   func(ctx context.Context, name string) (bool, error)
+	PoolIsActiveFn                 func(ctx context.Context, name string) (bool, error)
+	StartPoolFn                    func(ctx context.Context, name string) error
 	CreateTmpfsPoolFn              func(ctx context.Context, name, path, size string) error
 	DestroyPoolFn                  func(ctx context.Context, name string) error
 	VolumeExistsFn                 func(ctx context.Context, pool, name string) (bool, error)
@@ -136,6 +138,22 @@ func (m *MockClient) PoolExists(ctx context.Context, name string) (bool, error) 
 		return m.PoolExistsFn(ctx, name)
 	}
 	return false, nil
+}
+
+// PoolIsActive delegates to PoolIsActiveFn or returns true, nil.
+func (m *MockClient) PoolIsActive(ctx context.Context, name string) (bool, error) {
+	if m.PoolIsActiveFn != nil {
+		return m.PoolIsActiveFn(ctx, name)
+	}
+	return true, nil
+}
+
+// StartPool delegates to StartPoolFn or returns nil.
+func (m *MockClient) StartPool(ctx context.Context, name string) error {
+	if m.StartPoolFn != nil {
+		return m.StartPoolFn(ctx, name)
+	}
+	return nil
 }
 
 // CreateTmpfsPool delegates to CreateTmpfsPoolFn or returns nil.

@@ -411,6 +411,26 @@ func (c *VirshClient) PoolExists(ctx context.Context, name string) (bool, error)
 	return true, nil
 }
 
+// PoolIsActive returns true if the storage pool exists and is running.
+func (c *VirshClient) PoolIsActive(ctx context.Context, name string) (bool, error) {
+	output, err := c.runVirsh(ctx, "pool-info", name)
+	if err != nil {
+		return false, err
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		if state, ok := strings.CutPrefix(line, "State:"); ok {
+			return strings.TrimSpace(state) == "running", nil
+		}
+	}
+	return false, nil
+}
+
+// StartPool starts a defined but inactive storage pool.
+func (c *VirshClient) StartPool(ctx context.Context, name string) error {
+	_, err := c.runVirsh(ctx, "pool-start", name)
+	return err
+}
+
 // CreateTmpfsPool creates a tmpfs-backed storage pool, mounts it, and starts it.
 // Uses sudo for mkdir and mount (requires sudoers entry for the service account).
 // If size is non-empty it is passed as the tmpfs `size=` option (e.g. "80%", "16G");

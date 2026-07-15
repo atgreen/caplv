@@ -918,6 +918,27 @@ func (r *LibvirtMachineReconciler) reconcileRootDisk(ctx context.Context, rc *re
 		if err != nil {
 			return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool")
 		}
+		if poolExists {
+			// A libvirt daemon restart leaves the pool defined but inactive,
+			// and every volume operation against it fails with "pool is not
+			// active". Start it; if that fails the tmpfs backing is gone, so
+			// destroy the stale definition and recreate from scratch.
+			active, err := libvirtClient.PoolIsActive(ctx, ephPoolName)
+			if err != nil {
+				return r.handleLibvirtError(libvirtMachine, err, "checking ephemeral pool state")
+			}
+			if !active {
+				log.Info("Ephemeral pool is inactive, starting it", "pool", ephPoolName)
+				if err := libvirtClient.StartPool(ctx, ephPoolName); err != nil {
+					log.Info("Failed to start inactive ephemeral pool, destroying and recreating",
+						"pool", ephPoolName, "reason", err.Error())
+					if err := libvirtClient.DestroyPool(ctx, ephPoolName); err != nil {
+						return r.handleLibvirtError(libvirtMachine, err, "destroying stale ephemeral pool")
+					}
+					poolExists = false
+				}
+			}
+		}
 		if !poolExists {
 			ephPoolSize := libvirtMachine.Spec.RootDisk.EphemeralPoolSize
 			log.Info("Creating ephemeral tmpfs pool", "pool", ephPoolName, "path", ephPoolPath, "size", ephPoolSize)
