@@ -92,7 +92,12 @@ type RootDiskSpec struct {
 	// +required
 	Size resource.Quantity `json:"size"`
 
-	// storagePool is the name of the libvirt storage pool to use.
+	// storagePool is the name of the pre-existing libvirt storage pool
+	// that receives the root disk volume (and the NoCloud ISO for
+	// cloud-init guests). Not used as the disk target when ephemeralPool
+	// is true — CAPLV then provisions its own per-machine tmpfs pool
+	// instead — though baseImagePool still defaults to this value when
+	// unset.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
@@ -112,11 +117,15 @@ type RootDiskSpec struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]+$`
 	BaseImagePool string `json:"baseImagePool,omitempty"`
 
-	// ephemeralPool, when true, causes CAPLV to create the storagePool as
-	// a tmpfs-backed pool at provisioning time and destroy it (including
-	// the tmpfs mount) at deletion time. This ensures the host's persistent
-	// storage is never touched and RAM is only consumed while the VM exists.
-	// Requires storagePool to differ from baseImagePool.
+	// ephemeralPool, when true, causes CAPLV to create a per-machine
+	// tmpfs-backed pool named <namespace>-<cluster>-<machine>-pool
+	// (surfaced in status.artifacts.ephemeralPoolName) at provisioning
+	// time and destroy it, including the tmpfs mount, at deletion time.
+	// The root disk and any bootstrap ISO are placed in this generated
+	// pool instead of storagePool. This ensures the host's persistent
+	// storage is never touched and RAM is only consumed while the VM
+	// exists. Set baseImagePool to the persistent pool holding the base
+	// image.
 	// +optional
 	EphemeralPool bool `json:"ephemeralPool,omitempty"`
 

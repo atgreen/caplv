@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Documented which storage pools CAPLV creates versus which the operator must provide: a new "Storage Pools" README section enumerates every pool referenced across the CRDs, and the `rootDisk.storagePool` / `rootDisk.ephemeralPool` CRD field descriptions now state that the ephemeral pool is a CAPLV-generated per-machine pool named `<namespace>-<cluster>-<machine>-pool` (surfaced in `status.artifacts.ephemeralPoolName`) — previously they incorrectly implied CAPLV creates a tmpfs pool under the `storagePool` name.
+
+### Fixed
+- Endless retry loop when a machine's ephemeral tmpfs pool exists but is inactive — a libvirt daemon restart (common with session-mode per-user daemons) leaves the pool defined but stopped, and every subsequent volume operation failed with `pool '...' is not active`, an error classified as transient and retried forever. `reconcileRootDisk` now detects the defined-but-inactive pool and repairs it: `pool-start` if the tmpfs backing is still mounted, otherwise destroy and recreate the pool from scratch.
+
 ## [0.2.0] - 2026-07-14
 
 ### Added

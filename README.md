@@ -363,17 +363,21 @@ set `ephemeralPool: true`:
 
 ```yaml
 rootDisk:
-  storagePool: "vm-disks"        # CAPLV creates this as tmpfs on demand
+  storagePool: "vm-disks"        # ignored in this mode — CAPLV provisions its own tmpfs pool
   baseImagePool: "default"       # persistent pool with pre-staged base image
   baseImage: "rhcos.qcow2"
   ephemeralPool: true
   ephemeralPoolSize: "80%"       # optional cap on tmpfs RAM (default: kernel's 50%)
 ```
 
-**No host setup required.** CAPLV creates a per-machine tmpfs mount and
-libvirt storage pool when the VM is provisioned, and tears both down when
-the VM is deleted. RAM is only consumed while the VM exists. The host's
-persistent storage is never touched.
+**No host setup required.** CAPLV creates a per-machine tmpfs mount at
+`/run/caplv/<namespace>-<cluster>-<machine>` and a libvirt storage pool
+named `<namespace>-<cluster>-<machine>-pool` when the VM is provisioned,
+and tears both down when the VM is deleted. All per-VM artifacts (the
+root disk and any bootstrap ISO) land in this generated pool — the
+`storagePool` field is not used as the disk target in this mode (see
+[Storage Pools](#storage-pools)). RAM is only consumed while the VM
+exists. The host's persistent storage is never touched.
 
 `ephemeralPoolSize` accepts tmpfs `size=` syntax: a percentage of physical
 RAM (`"80%"`) or an absolute size (`"16G"`). When unset, the kernel's
@@ -790,6 +794,37 @@ daemon at all, see [session mode](#session-mode-unprivileged-libvirt),
 which runs both the daemon and QEMU as the service account and confines
 the remaining privilege to the setuid `qemu-bridge-helper` plus the same
 `/run/caplv/` sudo rules.
+
+## Storage Pools
+
+Storage pools appear in five places across CAPLV's CRDs. All but one are
+**operator-provided**: they must already exist on the libvirt host before
+a machine is scheduled, and preflight verifies each one — a missing pool
+fails the machine terminally with `BaseImagePoolNotFound` /
+`StoragePoolNotFound` instead of retrying. The only pool CAPLV creates
+itself is the per-machine ephemeral pool.
+
+| Pool | Who creates it | What it holds |
+|------|----------------|---------------|
+| `LibvirtCluster.spec.baseImage.pool` | Operator | Staging target for the cluster-wide base image: the controller uploads the fetched qcow2 here as `baseImage.volumeName`. Only referenced when `spec.baseImage` is set. |
+| `LibvirtMachine.spec.rootDisk.baseImagePool` | Operator | The read-only base image (`rootDisk.baseImage`) that root disks are cloned from (`full-clone`) or backed by (`copy-on-write`). Defaults to `rootDisk.storagePool` when unset. |
+| `LibvirtMachine.spec.rootDisk.storagePool` | Operator | The VM's root disk volume, plus the NoCloud ISO for cloud-init guests. **Not used as the root-disk target when `ephemeralPool: true`** — see below. |
+| `LibvirtMachine.spec.additionalDisks[].storagePool` | Operator | The corresponding additional data disk volume. |
+| `<namespace>-<cluster>-<machine>-pool` | **CAPLV** (only with `ephemeralPool: true`) | Everything `rootDisk.storagePool` would otherwise hold — the root-disk overlay and any bootstrap ISO — on a per-machine tmpfs mounted at `/run/caplv/<namespace>-<cluster>-<machine>`. |
+
+The ephemeral pool is created when the machine is provisioned and torn
+down — pool, tmpfs mount, and directory — when it is deleted. Its
+generated name is surfaced on the machine at
+`status.artifacts.ephemeralPoolName`, so a pool named after one of your
+machines on a host is CAPLV's, not something an operator needs to manage.
+If a libvirt daemon restart leaves the pool defined but inactive, the
+controller restarts it on the next reconcile — or, when the tmpfs backing
+is gone, destroys and recreates it. Because the pool is generated per
+machine, `rootDisk.storagePool` is never used as the root-disk target in
+ephemeral mode. One caveat: `baseImagePool` still *defaults* to the
+`storagePool` value when unset, so in ephemeral mode either set
+`baseImagePool` explicitly to the persistent pool holding the base image
+(recommended), or make sure `storagePool` names that pool.
 
 ## Host Storage Layout (with ephemeralPool: true)
 
