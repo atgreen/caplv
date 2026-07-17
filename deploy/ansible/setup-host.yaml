@@ -152,6 +152,42 @@
     - name: Configure session mode
       when: libvirt_mode == 'session'
       block:
+        # When core dumps are enabled libvirt sets the qemu process
+        # core-file-size limit to unlimited; the unprivileged session daemon
+        # cannot raise it above the account's hard limit, so a capped hard
+        # limit fails VM start with "cannot limit core file size ...
+        # Operation not permitted". Raise the hard limit to unlimited for
+        # both entry paths of the session daemon: PAM logins (SSH-spawned)
+        # and the lingering systemd user manager, which does not go through
+        # the sshd PAM stack. This must precede enable-linger so the user
+        # manager starts with the drop-in in place; on an already-lingering
+        # host the manager keeps the old limit until the host (or
+        # user@<uid>.service, killing its VMs) is restarted.
+        - name: Raise core-dump hard limit for PAM sessions of the service account
+          ansible.builtin.copy:
+            content: |
+              {{ caplv_user }} hard core unlimited
+            dest: /etc/security/limits.d/90-caplv-core.conf
+            mode: "0644"
+
+        - name: Create user manager drop-in directory
+          ansible.builtin.file:
+            path: "/etc/systemd/system/user@{{ caplv_uid.stdout }}.service.d"
+            state: directory
+            mode: "0755"
+
+        - name: Raise core-dump hard limit for the lingering user manager
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              LimitCORE=infinity
+            dest: "/etc/systemd/system/user@{{ caplv_uid.stdout }}.service.d/90-caplv-core.conf"
+            mode: "0644"
+
+        - name: Reload systemd for the user manager drop-in
+          ansible.builtin.systemd:
+            daemon_reload: true
+
         - name: Enable lingering so session VMs survive logout and autostart
           ansible.builtin.command: loginctl enable-linger {{ caplv_user }}
           changed_when: true
