@@ -631,21 +631,27 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 
 // WriteRemoteFile writes data to a file on the remote host via SSH.
 // Uses sudo for mkdir (the /run/caplv/ directory requires root to create).
-// The file itself is written via tee to handle permissions.
+// Directory and file modes are set explicitly (0755/0644): mkdir and tee
+// inherit the remote root umask, which on hosts with a restrictive umask
+// (e.g. 0027) would strip the world bits the unprivileged qemu process
+// needs to traverse the directory and read the file.
 func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
-	// Ensure parent directory exists (requires sudo).
+	// Ensure parent directory exists (requires sudo). install -d applies
+	// the mode to every path component it creates, unlike mkdir -p -m.
 	dir := path[:strings.LastIndex(path, "/")]
-	if err := c.runSSH(ctx, fmt.Sprintf("sudo mkdir -p %s", shellQuote(dir))); err != nil {
+	if err := c.runSSH(ctx, fmt.Sprintf("sudo install -d -m 0755 %s", shellQuote(dir))); err != nil {
 		return fmt.Errorf("mkdir failed: %w", err)
 	}
 
-	// Write file via sudo tee.
+	// Write file via sudo tee, then chmod so the mode is umask-independent
+	// (and repairs a wrong mode left by a previous write).
 	session, err := c.sshClient.NewSession()
 	if err != nil {
 		return fmt.Errorf("ssh session for write: %w", err)
 	}
 	session.Stdin = bytes.NewReader(data)
-	if err := session.Run(fmt.Sprintf("sudo tee %s > /dev/null", shellQuote(path))); err != nil {
+	cmd := fmt.Sprintf("sudo tee %s > /dev/null && sudo chmod 0644 %s", shellQuote(path), shellQuote(path))
+	if err := session.Run(cmd); err != nil {
 		_ = session.Close()
 		return fmt.Errorf("write remote file %s: %w", path, err)
 	}
