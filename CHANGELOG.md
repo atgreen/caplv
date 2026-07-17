@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.3] - 2026-07-17
 
 ### Fixed
 - VM start failed with `-fw_cfg ... can't load /run/caplv/<machine>/ignition.json: Failed to open file: Permission denied` on hosts with a restrictive root umask (e.g. `0027`) — `WriteRemoteFile` wrote host files via `sudo tee` and created directories via `sudo mkdir -p`, both of which inherit the remote root umask, so the ignition file (and boot artifacts) could come out `0640`/`0750` and be unreadable by the unprivileged qemu process. File and directory modes are now set explicitly: parent directories are created with `install -d -m 0755` (which, unlike `mkdir -p -m`, applies the mode to every path component it creates) and files are `chmod 0644` after the write, which also repairs a wrong mode left behind by a previous write.
