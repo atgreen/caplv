@@ -629,6 +629,10 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 	return c.runVirsh(ctx, "vol-path", name, "--pool", pool)
 }
 
+// hostRunDir is the CAPLV-owned runtime directory on hosts; it holds the
+// per-machine artifact directories (ignition files, ephemeral pool mounts).
+const hostRunDir = "/run/caplv"
+
 // WriteRemoteFile writes data to a file on the remote host via SSH.
 // Uses sudo for mkdir (the /run/caplv/ directory requires root to create).
 // Directory and file modes are set explicitly (0755/0644): mkdir and tee
@@ -638,8 +642,18 @@ func (c *VirshClient) GetVolumePath(ctx context.Context, pool, name string) (str
 func (c *VirshClient) WriteRemoteFile(ctx context.Context, path string, data []byte) error {
 	// Ensure parent directory exists (requires sudo). install -d applies
 	// the mode to every path component it creates, unlike mkdir -p -m.
+	// The explicit chmod repairs directories that already exist with a
+	// wrong mode (left behind by an older CAPLV that created them under a
+	// restrictive umask); for paths under /run/caplv that includes the
+	// CAPLV-owned base directory itself.
 	dir := path[:strings.LastIndex(path, "/")]
-	if err := c.runSSH(ctx, fmt.Sprintf("sudo install -d -m 0755 %s", shellQuote(dir))); err != nil {
+	repair := []string{dir}
+	if strings.HasPrefix(dir, hostRunDir+"/") {
+		repair = append(repair, hostRunDir)
+	}
+	mkdirCmd := fmt.Sprintf("sudo install -d -m 0755 %s && sudo chmod 0755 %s",
+		shellQuote(dir), shellJoin(repair...))
+	if err := c.runSSH(ctx, mkdirCmd); err != nil {
 		return fmt.Errorf("mkdir failed: %w", err)
 	}
 

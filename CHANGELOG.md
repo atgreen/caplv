@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- The restricted sudoers allowlist deployed by the setup playbook did not permit the `install -d -m 0755` and `chmod` commands that 0.2.3 introduced for umask-independent file writes, so on playbook-configured hosts every ignition/artifact write under `/run/caplv` would have failed with a sudo password prompt. The `/etc/sudoers.d/caplv` template now allowlists `install -d -m 0755`, `chmod 0755`, and `chmod 0644` scoped to `/run/caplv/*`.
+- A pre-existing `/run/caplv` directory with a too-restrictive mode (e.g. `750 root:root`, created by a CAPLV version prior to 0.2.3 under a restrictive root umask) was not repaired by the 0.2.3 fix — `install -d` only sets the mode on directories it creates — so the unprivileged qemu process still could not traverse to the ignition file and VM start kept failing with `Permission denied`. `WriteRemoteFile` now explicitly `chmod 0755`s the parent directory on every write, including the CAPLV-owned `/run/caplv` base itself for paths beneath it, so affected hosts are repaired automatically on the next reconcile with no manual chmod needed.
+
 ## [0.2.3] - 2026-07-17
 
 ### Fixed
