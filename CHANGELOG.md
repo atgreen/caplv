@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.4] - 2026-07-17
 
 ### Fixed
 - The restricted sudoers allowlist deployed by the setup playbook did not permit the `install -d -m 0755` and `chmod` commands that 0.2.3 introduced for umask-independent file writes, so on playbook-configured hosts every ignition/artifact write under `/run/caplv` would have failed with a sudo password prompt. The `/etc/sudoers.d/caplv` template now allowlists `install -d -m 0755`, `chmod 0755`, and `chmod 0644` scoped to `/run/caplv/*`.
